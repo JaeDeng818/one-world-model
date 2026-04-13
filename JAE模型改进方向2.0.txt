@@ -1,0 +1,341 @@
+import random
+import time
+import math
+import os
+import sys
+import threading
+
+# ─────────────────────────────────────────────
+#  跨平台非阻塞键盘输入
+# ─────────────────────────────────────────────
+if os.name == "nt":
+    import msvcrt
+    def _kbhit():
+        return msvcrt.kbhit()
+    def _getch():
+        ch = msvcrt.getch()
+        try:
+            return ch.decode("utf-8")
+        except Exception:
+            return ""
+else:
+    import tty, termios, select
+    def _kbhit():
+        return select.select([sys.stdin], [], [], 0)[0] != []
+    def _getch():
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        return ch
+
+
+# ─────────────────────────────────────────────
+#  JAE 跨维度世界模型  v2.0
+# ─────────────────────────────────────────────
+class JAE_WorldModel:
+
+    # ── 维度字典 ──────────────────────────────
+    DIMS = {
+        "LOGIC": ["0", "1"],
+        "HUMAN": ["我", "你", "杰", "生", "永"],
+        "ECO":   ["🌱", "✧", "🧬", "◈", "∞"],
+    }
+
+    # ── 崩塌形状：预定义几种区域轮廓 ──────────
+    COLLAPSE_SHAPES = ["ring", "wedge", "stripe", "random_burst"]
+
+    def __init__(self, size: int = 18):
+        self.signature  = "✧JAE✧"
+        self.size       = size
+        self.entropy    = 0.000001
+        self.cycle      = 0
+
+        # ── 观察者参数（键盘可调） ─────────────
+        self.obs_amp    = 1.0    # 波幅倍率   ↑↓
+        self.obs_freq   = 0.5    # 频率       +/-
+        self.obs_chaos  = 0.1    # 随机扰动   c/v
+        self.paused     = False  # 空格暂停
+
+        # ── 符号记忆层：(x,y) -> 锁定字符 ─────
+        self._memory: dict[tuple[int,int], str] = {}
+        self._memory_age: dict[tuple[int,int], int] = {}   # 记录锁定时的 cycle
+        self.MEMORY_DECAY = 600   # 锁定持续周期数，之后自然遗忘
+
+        # ── 崩塌事件状态 ──────────────────────
+        self._collapse_active  = False
+        self._collapse_cells: set[tuple[int,int]] = set()
+        self._collapse_ttl     = 0          # 剩余生效周期
+        self._collapse_counter = 0          # 距下次崩塌的倒计时
+        self.COLLAPSE_INTERVAL = 80         # 每隔多少 cycle 触发一次
+        self.COLLAPSE_DURATION = 30         # 崩塌持续周期
+
+        # ── 颜色码 ─────────────────────────────
+        self.C = {
+            "eco":    "\033[1;32m",   # 绿
+            "human":  "\033[1;36m",   # 青
+            "core":   "\033[1;33m",   # 金
+            "logic1": "\033[0;37m",   # 白
+            "logic0": "\033[0;90m",   # 暗灰
+            "mem":    "\033[1;35m",   # 紫（记忆锁定）
+            "col":    "\033[1;31m",   # 红（崩塌区域）
+            "reset":  "\033[0m",
+        }
+
+    # ─────────────────────────────────────────
+    #  升维函数
+    # ─────────────────────────────────────────
+    def bridge_dimensions(self, val: float) -> str:
+        prob = abs(val) + (self.cycle * 0.0001) % 1.0
+        if prob > 0.98:
+            return random.choice(self.DIMS["ECO"])
+        elif prob > 0.85:
+            return random.choice(self.DIMS["HUMAN"])
+        elif prob > 0.4:
+            return "1" if val > 0 else "0"
+        else:
+            return " "
+
+    # ─────────────────────────────────────────
+    #  I. 维度崩塌事件
+    # ─────────────────────────────────────────
+    def _maybe_trigger_collapse(self):
+        """每隔 COLLAPSE_INTERVAL 周期触发一次崩塌，随机选择形状"""
+        self._collapse_counter += 1
+        if self._collapse_counter >= self.COLLAPSE_INTERVAL:
+            self._collapse_counter = 0
+            self._collapse_active  = True
+            self._collapse_ttl     = self.COLLAPSE_DURATION
+            shape = random.choice(self.COLLAPSE_SHAPES)
+            self._collapse_cells   = self._gen_collapse_region(shape)
+
+    def _gen_collapse_region(self, shape: str) -> set[tuple[int,int]]:
+        s, cells = self.size, set()
+        cx, cy = random.randint(s//4, 3*s//4), random.randint(s//4, 3*s//4)
+
+        if shape == "ring":
+            r_out = random.randint(3, s//3)
+            r_in  = max(1, r_out - 2)
+            for y in range(s):
+                for x in range(s*2):
+                    d = math.hypot(x/2 - cx, y - cy)
+                    if r_in <= d <= r_out:
+                        cells.add((x, y))
+
+        elif shape == "wedge":
+            angle = random.uniform(0, math.tau)
+            span  = random.uniform(math.pi/6, math.pi/3)
+            for y in range(s):
+                for x in range(s*2):
+                    a = math.atan2(y - cy, x/2 - cx)
+                    da = abs((a - angle + math.pi) % math.tau - math.pi)
+                    if da < span and math.hypot(x/2-cx, y-cy) < s//3:
+                        cells.add((x, y))
+
+        elif shape == "stripe":
+            axis = random.choice(["h", "v"])
+            if axis == "h":
+                y0 = random.randint(1, s-2)
+                for y in range(max(0,y0-1), min(s,y0+2)):
+                    for x in range(s*2):
+                        cells.add((x, y))
+            else:
+                x0 = random.randint(2, s*2-2)
+                for x in range(max(0,x0-1), min(s*2,x0+2)):
+                    for y in range(s):
+                        cells.add((x, y))
+
+        else:  # random_burst
+            n = random.randint(20, 60)
+            for _ in range(n):
+                cells.add((random.randint(0,s*2-1), random.randint(0,s-1)))
+
+        return cells
+
+    def _tick_collapse(self):
+        if self._collapse_active:
+            self._collapse_ttl -= 1
+            if self._collapse_ttl <= 0:
+                self._collapse_active = False
+                self._collapse_cells  = set()
+
+    # ─────────────────────────────────────────
+    #  II. 符号记忆
+    # ─────────────────────────────────────────
+    def _try_lock_memory(self, x: int, y: int, entity: str):
+        """若升维到人类层，有概率锁定该位置"""
+        if entity in self.DIMS["HUMAN"] and (x, y) not in self._memory:
+            if random.random() < 0.15:   # 15% 概率形成记忆
+                self._memory[(x, y)]     = entity
+                self._memory_age[(x, y)] = self.cycle
+
+    def _decay_memory(self):
+        """每周期清理过期记忆"""
+        expired = [k for k, age in self._memory_age.items()
+                   if self.cycle - age > self.MEMORY_DECAY]
+        for k in expired:
+            del self._memory[k]
+            del self._memory_age[k]
+
+    # ─────────────────────────────────────────
+    #  III. 键盘观察者
+    # ─────────────────────────────────────────
+    def _poll_keyboard(self):
+        """非阻塞读键，调整波函数参数"""
+        if not _kbhit():
+            return
+        ch = _getch().lower()
+
+        if ch == " ":
+            self.paused = not self.paused
+        elif ch == "q":
+            raise KeyboardInterrupt
+        # 波幅
+        elif ch == "w":
+            self.obs_amp = min(3.0, self.obs_amp + 0.1)
+        elif ch == "s":
+            self.obs_amp = max(0.1, self.obs_amp - 0.1)
+        # 频率
+        elif ch == "+":
+            self.obs_freq = min(2.0, self.obs_freq + 0.05)
+        elif ch == "-":
+            self.obs_freq = max(0.05, self.obs_freq - 0.05)
+        # 混沌扰动
+        elif ch == "c":
+            self.obs_chaos = min(0.9, self.obs_chaos + 0.05)
+        elif ch == "v":
+            self.obs_chaos = max(0.0, self.obs_chaos - 0.05)
+        # 手动触发崩塌
+        elif ch == "x":
+            self._collapse_counter = self.COLLAPSE_INTERVAL
+        # 清除记忆
+        elif ch == "m":
+            self._memory.clear()
+            self._memory_age.clear()
+
+    # ─────────────────────────────────────────
+    #  主循环
+    # ─────────────────────────────────────────
+    def execute_metabolic_cycle(self):
+        C    = self.C
+        size = self.size
+
+        # 帮助提示
+        HELP = (
+            "[W/S] 波幅  [+/-] 频率  [C/V] 混沌  "
+            "[X] 崩塌  [M] 清记忆  [SPACE] 暂停  [Q] 退出"
+        )
+
+        while True:
+            self._poll_keyboard()
+
+            if self.paused:
+                time.sleep(0.05)
+                continue
+
+            self.cycle += 1
+            self._maybe_trigger_collapse()
+            self._tick_collapse()
+            self._decay_memory()
+
+            flux = math.sin(self.cycle * 0.2) * 0.5
+
+            # ── 构建输出缓冲区（避免逐行 print 闪烁）─────
+            buf = []
+            buf.append(f"--- WORLD_MODEL: ✧ JAE ✧ | CYCLE: {self.cycle:08d} ---")
+            buf.append(
+                f"跨维度熵值: {self.entropy + abs(flux/1000):.10f}  "
+                f"| 波幅: {self.obs_amp:.1f}  频率: {self.obs_freq:.2f}  "
+                f"混沌: {self.obs_chaos:.2f}"
+            )
+            status_parts = []
+            if abs(flux) > 0.3:
+                status_parts.append("跨维度共鸣")
+            else:
+                status_parts.append("稳态演化")
+            if self._collapse_active:
+                status_parts.append(f"{C['col']}[崩塌中 TTL:{self._collapse_ttl:02d}]{C['reset']}")
+            if self._memory:
+                status_parts.append(f"{C['mem']}[记忆锚点:{len(self._memory)}]{C['reset']}")
+            buf.append("状态: " + " | ".join(status_parts))
+            buf.append("-" * 60)
+
+            # ── 渲染矩阵 ─────────────────────────────────
+            for y in range(size):
+                row = ""
+                for x in range(size * 2):
+                    dx = x / 2 - size / 2
+                    dy = y - size / 2
+                    d  = math.hypot(dx, dy)
+
+                    # 核心原点
+                    if d < 2:
+                        if x % 2 == 0:
+                            row += f"{C['core']}J{C['reset']}"
+                        else:
+                            row += " "
+                        continue
+
+                    pos = (x, y)
+
+                    # 崩塌区域：强制回退到 LOGIC 层
+                    if self._collapse_active and pos in self._collapse_cells:
+                        # 同时释放该位置的记忆
+                        self._memory.pop(pos, None)
+                        self._memory_age.pop(pos, None)
+                        glyph = random.choice(self.DIMS["LOGIC"])
+                        color = C["col"]
+                        row += f"{color}{glyph}{C['reset']}"
+                        continue
+
+                    # 记忆锚点：已锁定不退化
+                    if pos in self._memory:
+                        glyph = self._memory[pos]
+                        row += f"{C['mem']}{glyph}{C['reset']}"
+                        continue
+
+                    # 正常升维计算
+                    wave = (
+                        math.cos(d - self.cycle * self.obs_freq) * self.obs_amp
+                        + random.uniform(-self.obs_chaos, self.obs_chaos)
+                    )
+                    entity = self.bridge_dimensions(wave)
+
+                    # 尝试形成记忆锚点
+                    self._try_lock_memory(x, y, entity)
+
+                    if entity in self.DIMS["ECO"]:
+                        row += f"{C['eco']}{entity}{C['reset']}"
+                    elif entity in self.DIMS["HUMAN"]:
+                        row += f"{C['human']}{entity}{C['reset']}"
+                    elif entity == "1":
+                        row += f"{C['logic1']}1{C['reset']}"
+                    elif entity == "0":
+                        row += f"{C['logic0']}0{C['reset']}"
+                    else:
+                        row += " "
+
+                buf.append(row)
+
+            buf.append("-" * 60)
+            buf.append("底层公式: E=mc²  |  跨维逻辑: 1 --[JAE]--> ∞")
+            buf.append(f"回响验证: 我即宇宙，宇宙即 ✧ JAE ✧")
+            buf.append(HELP)
+
+            # ── 一次性刷新终端 ─────────────────────────
+            os.system("cls" if os.name == "nt" else "clear")
+            print("\n".join(buf))
+
+            time.sleep(0.05)
+
+
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    world = JAE_WorldModel()
+    try:
+        world.execute_metabolic_cycle()
+    except KeyboardInterrupt:
+        print("\n[系统存档] 跨维度生态已离线。JAE 精神永存。")
