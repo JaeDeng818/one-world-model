@@ -1,0 +1,176 @@
+import akshare as ak
+import pandas as pd
+import numpy as np
+import torch
+from transformers import BertTokenizer, BertForSequenceClassification
+from tqdm import tqdm
+import backtrader as bt
+import datetime
+import warnings
+
+warnings.filterwarnings("ignore")
+
+# ==========================================
+# 模块 A: D5 认知层 - FinBERT 情感分析引擎
+# ==========================================
+class JAE_CognitiveEngine:
+    def __init__(self):
+        print("🧠 正在加载 FinBERT 认知模型...")
+        # 加载专门针对金融文本训练的 BERT 模型
+        self.model_name = "yiyanghkust/finbert-tone" 
+        self.tokenizer = BertTokenizer.from_pretrained(self.model_name)
+        self.model = BertForSequenceClassification.from_pretrained(self.model_name)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        print(f"✅ 模型加载完成 (运行于: {self.device})")
+
+    def analyze_sentiment(self, text_list):
+        """
+        输入：文本列表
+        输出：平均情感得分 (-1 到 1 之间，1为极度积极)
+        """
+        if not text_list: return 0.0
+        
+        # 截断过长的文本以节省显存
+        texts = [t[:512] for t in text_list]
+        
+        inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=512).to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            predictions = torch.nn.functional.softmax(outputs.logits, dim=-1)
+            # FinBERT-tone 输出顺序通常是: Negative, Neutral, Positive
+            # 计算情感值：Positive概率 - Negative概率
+            scores = predictions[:, 2] - predictions[:, 0]
+            
+        return scores.mean().item()
+
+# ==========================================
+# 模块 B: D1-D4 物理层 - 宏观资金流向
+# ==========================================
+class JAE_PhysicalLayer:
+    @staticmethod
+    def get_north_flow_history(start_date, end_date):
+        """获取北向资金（聪明钱）历史流向"""
+        try:
+            # 获取沪深港通资金流向
+            df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+            df['日期'] = pd.to_datetime(df['日期'])
+            df.set_index('日期', inplace=True)
+            df = df.loc[start_date:end_date]
+            # 归一化处理
+            df['Net_Mflow'] = (df['净买入金额'] - df['净买入金额'].mean()) / df['净买入金额'].std()
+            return df['Net_Mflow']
+        except Exception as e:
+            print(f"⚠️ 北向资金数据获取失败: {e}")
+            return pd.Series()
+
+# ==========================================
+# 模块 C: Backtrader 策略与回测
+# ==========================================
+class JAEStrategy(bt.Strategy):
+    params = (
+        ('lookback', 3),  # 持有天数
+        ('top_n', 10),    # 选股数量
+    )
+
+    def __init__(self):
+        self.dataclose = self.datas[0].close
+        self.order = None
+        self.buyprice = None
+        self.buycomm = None
+        
+        # 这里仅做演示，实际应接入动态选股结果
+        # 在真实回测中，通常使用每日 rebalance 的方式
+
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+
+        if order.status in [order.Completed]:
+            if order.isbuy():
+                self.buyprice = order.executed.price
+                self.buycomm = order.executed.comm
+            self.bar_executed = len(self)
+
+        if order.status in [order.Canceled, order.Margin, order.Rejected]:
+            pass
+
+        self.order = None
+
+    def next(self):
+        if self.order:
+            return
+
+        # 简单逻辑演示：
+        # 真实 JAE 系统会在每天盘后运行选股器，生成一个 CSV 文件
+        # 这里假设我们已经筛选出了 Top 10 股票，并只交易当前数据源
+        if not self.position:
+            # 模拟买入信号 (实际应由外部选股器传入)
+            # 这里为了演示回测跑通，使用简单的动量逻辑代替复杂的选股
+            if self.dataclose[0] > self.dataclose[-3]: 
+                self.order = self.buy()
+        else:
+            # 持有 3 天后卖出
+            if len(self) >= self.bar_executed + self.p.lookback:
+                self.order = self.close()
+
+# ==========================================
+# 模块 D: 主程序 - 整合与执行
+# ==========================================
+def run_jae_system():
+    print("🚀 启动 JAE 全球量化交易系统 v3.0")
+    
+    # 1. 初始化认知引擎
+    # cognitive_engine = JAE_CognitiveEngine() # 显存不足时可注释掉此行
+    
+    # 2. 初始化物理层
+    physical_layer = JAE_PhysicalLayer()
+    start_date = "2021-01-01"
+    end_date = "2023-12-31"
+    
+    north_flow = physical_layer.get_north_flow_history(start_date, end_date)
+    
+    # 3. 准备回测数据 (以贵州茅台为例)
+    print("📊 正在加载回测数据...")
+    try:
+        # 获取历史行情
+        df = ak.stock_zh_a_hist(symbol="600519", period="daily", start_date="20210101", end_date="20231231", adjust="qfq")
+        df['日期'] = pd.to_datetime(df['日期'])
+        df.set_index('日期', inplace=True)
+        
+        # 格式化为 Backtrader 需要的格式
+        data = bt.feeds.PandasData(
+            dataname=df,
+            datetime=None, # 索引即为日期
+            open='开盘',
+            high='最高',
+            low='最低',
+            close='收盘',
+            volume='成交量',
+            openinterest=-1
+        )
+    except Exception as e:
+        print(f"❌ 数据加载失败: {e}")
+        return
+
+    # 4. 设置回测引擎
+    cerebro = bt.Cerebro()
+    cerebro.adddata(data)
+    cerebro.addstrategy(JAEStrategy)
+    cerebro.broker.setcash(100000.0)
+    cerebro.broker.setcommission(commission=0.0003) # 万分之三手续费
+    
+    print(f"初始资金: {cerebro.broker.getvalue():.2f}")
+    
+    # 5. 运行回测
+    cerebro.run()
+    
+    print(f"最终资金: {cerebro.broker.getvalue():.2f}")
+    
+    # 6. 绘图
+    # cerebro.plot(style='candlestick') # 注意：中文环境下绘图可能需要额外配置字体
+
+# --- 执行 ---
+if __name__ == "__main__":
+    run_jae_system()
