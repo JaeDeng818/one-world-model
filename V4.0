@@ -1,0 +1,24 @@
+one-world-model/
+│
+├── core/
+│   ├── state.py          # 世界状态
+│   ├── dynamics.py       # 世界演化
+│   ├── agent.py          # Agent
+│   ├── world_model.py    # World Model
+│   ├── causal.py         # 因果图
+│   ├── counterfactual.py # 反事实宇宙
+│   └── uncertainty.py    # 不确定性
+│
+├── data/
+│   ├── historical/
+│   └── realtime/
+│
+├── experiments/
+│   ├── scenario.py
+│   ├── prediction.py
+│   └── backtest.py
+│
+├── config/
+│   └── world.yaml
+│
+└── run.py
