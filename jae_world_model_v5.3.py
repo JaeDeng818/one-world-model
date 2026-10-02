@@ -708,3 +708,15 @@ class MutationEngine:
         child = copy.deepcopy(
             genome
         )
+"vulnerability_ecosystem": {
+  "bounty_program_openness": 0.72,
+  "responsible_disclosure_strength": 0.68,
+  "ai_agent_risk": 0.74,
+  "prompt_injection_pressure": 0.69,
+  "supply_chain_vuln_discovery": 0.71,
+  "proof_verification_backlog": 0.71,
+  "mathematical_certainty": 0.46,
+  "trust_chain_friction": 0.58,
+  "bounty_spam_noise": 0.63,
+  "high_value_vuln_scarcity": 0.57
+}
