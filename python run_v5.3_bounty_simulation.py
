@@ -1,0 +1,357 @@
+"""
+JAE v5.3 漏洞赏金生态仿真
+==========================
+用途：模拟 AI 漏洞赏金、负责任披露、代理风险、数学证明可信度之间的联动
+运行：python run_v53_bounty_simulation.py
+"""
+
+import json
+import copy
+import random
+from datetime import datetime
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+# ---------- 尝试导入你的真实 v5.3 模块 ----------
+try:
+    from jae_world_model_v5_3 import (
+        WorldGenome,
+        EvolutionWorld,
+        FitnessEngine,
+        MutationEngine,
+    )
+    HAS_REAL_V53 = True
+except ImportError:
+    HAS_REAL_V53 = False
+
+# ---------- 回退：内置最小 v5.3 骨架 ----------
+
+@dataclass
+class WorldGenome:
+    ai_capability: float = 0.78
+    compute_demand: float = 0.85
+    gdp_growth: float = 0.42
+    manufacturing_activity: float = 0.56
+    energy_price_pressure: float = 0.82
+    energy_supply_stability: float = 0.48
+    logistics_flow: float = 0.51
+    social_cohesion: float = 0.55
+    geopolitical_risk: float = 0.79
+    climate_stress: float = 0.38
+    cyber_threat_level: float = 0.61
+    market_risk_premium: float = 0.68
+    supply_chain_stress: float = 0.64
+    monetary_tightness: float = 0.72
+    information_entropy: float = 0.59
+    scientific_frontier_open: float = 0.88
+    ai_proof_capacity: float = 0.82
+    human_verification_lag: float = 0.71
+    mathematical_certainty: float = 0.46
+    proof_trust_chain: float = 0.52
+    math_community_stability: float = 0.48
+    bounty_program_openness: float = 0.72
+    responsible_disclosure_strength: float = 0.68
+    ai_agent_risk: float = 0.74
+    prompt_injection_pressure: float = 0.69
+    supply_chain_vuln_discovery: float = 0.71
+    proof_verification_backlog: float = 0.71
+    trust_chain_friction: float = 0.58
+    bounty_spam_noise: float = 0.63
+    high_value_vuln_scarcity: float = 0.57
+
+
+class EvolutionWorld:
+    def __init__(self, genome: Optional[WorldGenome] = None):
+        self.genome = genome or WorldGenome()
+        self.timestep = 0
+        self.phase = "STRESSED"
+        self.civilization_health = 0.62
+        self.resilience_R = 0.58
+        self.entropy_S = 0.47
+        self.ai_autonomy_U = 0.71
+        self.stability_index = 0.55
+        self.cascade_risk = 0.43
+        self.infrastructure_status = {
+            "power_grid": "NORMAL",
+            "ai_compute": "HIGH_LOAD",
+            "cloud_services": "NORMAL",
+            "telecom": "NORMAL",
+            "manufacturing": "NORMAL",
+            "logistics": "STRESSED",
+            "financial_markets": "CAUTIOUS",
+            "healthcare": "NORMAL",
+            "government": "NORMAL",
+        }
+        self.shocks_active = []
+
+    def step(self, delta: float = 0.01):
+        g = self.genome
+        g.cyber_threat_level = clamp(
+            g.cyber_threat_level + delta * (g.ai_agent_risk - 0.5) * 0.3
+        )
+        g.trust_chain_friction = clamp(
+            g.trust_chain_friction
+            + delta * (1.0 - g.mathematical_certainty) * 0.25
+            + delta * (g.proof_verification_backlog - 0.5) * 0.15
+        )
+        g.bounty_spam_noise = clamp(
+            g.bounty_spam_noise
+            + delta * (g.ai_proof_capacity - 0.6) * 0.2
+            - delta * (g.responsible_disclosure_strength - 0.5) * 0.1
+        )
+        g.responsible_disclosure_strength = clamp(
+            g.responsible_disclosure_strength
+            + delta * (g.bounty_program_openness - 0.5) * 0.15
+            - delta * g.bounty_spam_noise * 0.1
+        )
+        g.supply_chain_vuln_discovery = clamp(
+            g.supply_chain_vuln_discovery
+            + delta * g.ai_proof_capacity * 0.2
+            + delta * g.ai_capability * 0.1
+        )
+        g.mathematical_certainty = clamp(
+            g.mathematical_certainty
+            - delta * g.proof_verification_backlog * 0.1
+            + delta * g.math_community_stability * 0.05
+        )
+        g.ai_agent_risk = clamp(
+            g.ai_agent_risk
+            + delta * (g.ai_capability - 0.6) * 0.15
+            - delta * g.responsible_disclosure_strength * 0.05
+        )
+        g.cascade_risk = clamp(
+            0.3 * g.geopolitical_risk
+            + 0.2 * g.energy_price_pressure
+            + 0.15 * g.cyber_threat_level
+            + 0.15 * g.trust_chain_friction
+            + 0.1 * g.supply_chain_stress
+            + 0.1 * g.monetary_tightness
+        )
+        self.civilization_health = clamp(
+            1.0
+            - 0.25 * g.geopolitical_risk
+            - 0.20 * g.energy_price_pressure
+            - 0.15 * g.cascade_risk
+            - 0.10 * g.trust_chain_friction
+            - 0.10 * g.monetary_tightness
+            + 0.10 * g.resilience_R
+            + 0.05 * g.responsible_disclosure_strength
+        )
+        self.stability_index = clamp(
+            1.0 - self.cascade_risk - 0.3 * g.information_entropy
+        )
+        self.timestep += 1
+        self._update_phase()
+
+    def _update_phase(self):
+        ch = self.civilization_health
+        cr = self.cascade_risk
+        if ch < 0.35 or cr > 0.75:
+            self.phase = "CRISIS"
+        elif ch < 0.55 or cr > 0.55:
+            self.phase = "STRESSED"
+        elif ch > 0.75 and cr < 0.3:
+            self.phase = "THRIVING"
+        else:
+            self.phase = "STABLE"
+
+
+class FitnessEngine:
+    def calculate(self, world: EvolutionWorld, simulation_steps: int = 200) -> float:
+        w = copy.deepcopy(world)
+        for _ in range(simulation_steps):
+            w.step(delta=0.005)
+        score = (
+            0.30 * w.civilization_health
+            + 0.15 * w.stability_index
+            + 0.10 * (1.0 - w.cascade_risk)
+            + 0.10 * w.genome.responsible_disclosure_strength
+            + 0.10 * (1.0 - w.genome.trust_chain_friction)
+            + 0.08 * w.genome.supply_chain_vuln_discovery
+            + 0.07 * (1.0 - w.genome.bounty_spam_noise)
+            + 0.05 * w.genome.mathematical_certainty
+            + 0.05 * (1.0 - w.genome.ai_agent_risk)
+        )
+        return round(score, 6)
+
+
+class MutationEngine:
+    def mutate(self, genome: WorldGenome, rate: float = 0.15) -> WorldGenome:
+        g = copy.deepcopy(genome)
+        for attr, val in vars(g).items():
+            if isinstance(val, (int, float)):
+                if random.random() < rate:
+                    delta = random.gauss(0, 0.08)
+                    setattr(g, attr, clamp(val + delta))
+        return g
+
+
+def clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, float(v)))
+
+
+# ---------- 仿真入口 ----------
+
+STATE_FILE = "world_state_20261002_complete.json"
+OUTPUT_FILE = "jae_bounty_simulation_20261002.json"
+STEPS = 200
+
+
+def load_state(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"[WARN] 未找到 {path}，将使用内置 2026-10-02 默认状态。")
+        return {}
+
+
+def inject_state(genome: WorldGenome, state: dict) -> WorldGenome:
+    dims = state.get("dimensions", {})
+    for key in vars(genome):
+        if key in dims:
+            setattr(genome, key, float(dims[key]))
+    return genome
+
+
+def inject_world(world: EvolutionWorld, state: dict):
+    for key in ["phase", "civilization_health", "resilience_R", "entropy_S",
+                "ai_autonomy_U", "stability_index", "cascade_risk", "timestep"]:
+        if key in state and hasattr(world, key):
+            setattr(world, key, state[key])
+    if "infrastructure_status" in state:
+        world.infrastructure_status.update(state["infrastructure_status"])
+    if "shocks_active" in state:
+        world.shocks_active = state["shocks_active"]
+
+
+def run_scenarios(genome_base: WorldGenome) -> list[dict]:
+    scenarios = [
+        {
+            "name": "baseline",
+            "label": "基准：2026-10-02 世界状态",
+            "mutations": {},
+        },
+        {
+            "name": "high_agent_risk",
+            "label": "AI 代理风险升高（自主越权事件增多）",
+            "mutations": {"ai_agent_risk": 0.90, "prompt_injection_pressure": 0.85},
+        },
+        {
+            "name": "strong_disclosure",
+            "label": "负责任披露机制强化（赏金+审核+隔离完善）",
+            "mutations": {
+                "bounty_program_openness": 0.88,
+                "responsible_disclosure_strength": 0.85,
+                "bounty_spam_noise": 0.40,
+            },
+        },
+        {
+            "name": "math_trust_crisis",
+            "label": "数学证明信任危机（候选解堆积、同行评议滞后）",
+            "mutations": {
+                "mathematical_certainty": 0.30,
+                "proof_verification_backlog": 0.90,
+                "trust_chain_friction": 0.80,
+                "math_community_stability": 0.35,
+            },
+        },
+        {
+            "name": "supply_chain_breakthrough",
+            "label": "AI 辅助供应链漏洞发现加速",
+            "mutations": {
+                "supply_chain_vuln_discovery": 0.90,
+                "ai_proof_capacity": 0.90,
+                "bounty_spam_noise": 0.75,
+            },
+        },
+        {
+            "name": "combined_stress",
+            "label": "复合压力：代理风险↑ + 信任链↓ + 地缘能源承压",
+            "mutations": {
+                "ai_agent_risk": 0.88,
+                "trust_chain_friction": 0.78,
+                "geopolitical_risk": 0.88,
+                "energy_price_pressure": 0.90,
+                "bounty_spam_noise": 0.72,
+            },
+        },
+    ]
+
+    results = []
+    for sc in scenarios:
+        g = copy.deepcopy(genome_base)
+        for k, v in sc["mutations"].items():
+            setattr(g, k, v)
+
+        world = EvolutionWorld(genome=g)
+        fitness = FitnessEngine().calculate(world, simulation_steps=STEPS)
+
+        for _ in range(STEPS):
+            world.step(delta=0.005)
+
+        results.append({
+            "scenario": sc["name"],
+            "label": sc["label"],
+            "fitness": fitness,
+            "final_phase": world.phase,
+            "civilization_health": round(world.civilization_health, 4),
+            "cascade_risk": round(world.cascade_risk, 4),
+            "stability_index": round(world.stability_index, 4),
+            "cyber_threat_level": round(world.genome.cyber_threat_level, 4),
+            "ai_agent_risk": round(world.genome.ai_agent_risk, 4),
+            "responsible_disclosure_strength": round(world.genome.responsible_disclosure_strength, 4),
+            "trust_chain_friction": round(world.genome.trust_chain_friction, 4),
+            "bounty_spam_noise": round(world.genome.bounty_spam_noise, 4),
+            "mathematical_certainty": round(world.genome.mathematical_certainty, 4),
+            "supply_chain_vuln_discovery": round(world.genome.supply_chain_vuln_discovery, 4),
+        })
+
+    return results
+
+
+def main():
+    print("=" * 60)
+    print("JAE v5.3 漏洞赏金生态仿真")
+    print(f"日期: 2026-10-02 | 步数: {STEPS} | 场景数: 6")
+    print("=" * 60)
+
+    state = load_state(STATE_FILE)
+    genome_base = WorldGenome()
+    genome_base = inject_state(genome_base, state)
+
+    world = EvolutionWorld(genome=genome_base)
+    inject_world(world, state)
+
+    base_fitness = FitnessEngine().calculate(world, simulation_steps=STEPS)
+    print(f"\n基准适应度: {base_fitness}")
+
+    scenarios = run_scenarios(genome_base)
+
+    baseline = next(s for s in scenarios if s["scenario"] == "baseline")
+    for s in scenarios:
+        delta = s["fitness"] - baseline["fitness"]
+        sign = "+" if delta >= 0 else ""
+        print(f"\n[{s['scenario']}] {s['label']}")
+        print(f"  适应度: {s['fitness']} ({sign}{round(delta, 4)})")
+        print(f"  阶段: {s['final_phase']} | 文明健康: {s['civilization_health']} | 级联风险: {s['cascade_risk']}")
+        print(f"  代理风险: {s['ai_agent_risk']} | 披露强度: {s['responsible_disclosure_strength']} | 信任摩擦: {s['trust_chain_friction']}")
+
+    result = {
+        "simulation_id": "JAE-V53-BOUNTY-20261002",
+        "timestamp": datetime.now().isoformat(),
+        "steps": STEPS,
+        "base_fitness": base_fitness,
+        "scenarios": scenarios,
+        "genome_initial": asdict(genome_base),
+        "note": "本仿真仅用于安全治理推演，不执行任何攻击、探测或越权行为。",
+    }
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+
+    print(f"\n仿真结果已写入: {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
