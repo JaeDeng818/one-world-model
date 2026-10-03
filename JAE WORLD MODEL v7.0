@@ -1,0 +1,1863 @@
+"""
+=========================================================
+JAE WORLD MODEL v7.0
+TRUE WORLD MODEL / WORLD EVOLUTION ENGINE
+=========================================================
+
+从 v6.1 → v7.0 的核心升级：
+
+[UPGRADE-1]  ASI 不再只是静态指数，而成为动态状态的一部分
+[UPGRADE-2]  引入 Causal World Graph（因果世界图）
+[UPGRADE-3]  跨系统传播不再统一修改 X/N，而是进入具体变量
+[UPGRADE-4]  引入非线性临界动力学
+[UPGRADE-5]  Phase-dependent dynamics
+[UPGRADE-6]  引入 Event Shock Engine
+[UPGRADE-7]  引入 Cascade / Failure Propagation
+[UPGRADE-8]  引入 Civilization Survival Index (CSI)
+[UPGRADE-9]  Monte Carlo 同时扰动初值、参数、事件
+[UPGRADE-10] 世界状态从“ASI排序”升级为“文明演化轨迹”
+
+核心问题：
+
+    AI 会不会主体化？
+    系统之间如何互相放大？
+    世界什么时候进入临界？
+    临界之后是否发生级联？
+    一个文明为什么能够长期存活？
+
+=========================================================
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from copy import deepcopy
+from typing import Dict, List, Optional
+import json
+import math
+import random
+
+
+# =========================================================
+# 1. WORLD SYSTEMS
+# =========================================================
+
+class WorldSystem(str, Enum):
+    FINANCE = "金融"
+    ENERGY = "能源"
+    SUPPLY_CHAIN = "供应链"
+    MILITARY = "军事"
+    INFORMATION = "信息"
+
+
+SYSTEMS = list(WorldSystem)
+
+
+# =========================================================
+# 2. AI SUBJECTIZATION
+# =========================================================
+
+class ASIZone(str, Enum):
+    TOOL = "工具区"
+    AGENT = "Agent区"
+    CRITICAL = "主体化临界区"
+    SUBJECT = "主体化区"
+    NETWORK = "主体网络区"
+
+
+ZONE_BANDS = [
+    (ASIZone.TOOL, 0.0, 60.0),
+    (ASIZone.AGENT, 60.0, 75.0),
+    (ASIZone.CRITICAL, 75.0, 85.0),
+    (ASIZone.SUBJECT, 85.0, 92.0),
+    (ASIZone.NETWORK, 92.0, 100.0),
+]
+
+
+class AIPhase(str, Enum):
+    TOOL = "Tool"
+    AGENT = "Agent"
+    CRITICAL = "Critical"
+    SUBJECT = "Subject"
+    NETWORK = "Network"
+
+
+PHASE_BY_ZONE = {
+    ASIZone.TOOL: AIPhase.TOOL,
+    ASIZone.AGENT: AIPhase.AGENT,
+    ASIZone.CRITICAL: AIPhase.CRITICAL,
+    ASIZone.SUBJECT: AIPhase.SUBJECT,
+    ASIZone.NETWORK: AIPhase.NETWORK,
+}
+
+
+def classify_asi(score: float) -> ASIZone:
+
+    for zone, low, high in ZONE_BANDS:
+        if low <= score < high:
+            return zone
+
+    return ASIZone.NETWORK
+
+
+def determine_ai_phase(score: float) -> AIPhase:
+
+    return PHASE_BY_ZONE[classify_asi(score)]
+
+
+# =========================================================
+# 3. ASI WEIGHTS
+# =========================================================
+
+ASI_WEIGHTS = {
+
+    "U": 0.18,
+    "A": 0.12,
+    "C": 0.08,
+    "N": 0.08,
+    "D": 0.07,
+    "H": 0.10,
+    "R": 0.15,
+    "X": 0.12,
+    "I": 0.10,
+
+}
+
+assert abs(sum(ASI_WEIGHTS.values()) - 1.0) < 1e-9
+
+
+# =========================================================
+# 4. SYSTEM STATE
+# =========================================================
+
+@dataclass
+class SystemState:
+
+    name: WorldSystem
+
+    # AI variables
+    U: float
+    A: float
+    C: float
+    N: float
+    D: float
+    H: float
+    R: float
+    X: float
+    I: float
+
+    # v3 / v6 variables
+    T: float = 0.0
+    F: float = 0.0
+
+    # World dynamics
+    resources: float = 100.0
+    stability: float = 100.0
+    dependency: float = 0.0
+    stress: float = 0.0
+
+    # Failure state
+    failure: float = 0.0
+    resilience: float = 70.0
+
+    # Historical
+    history: List[Dict] = field(default_factory=list)
+
+    _last_asi: Optional[float] = field(
+        default=None,
+        repr=False,
+        compare=False
+    )
+
+    def clamp(self):
+
+        for key in [
+            "U", "A", "C", "N", "D",
+            "H", "R", "X", "I",
+            "resources", "stability",
+            "dependency", "stress",
+            "failure", "resilience"
+        ]:
+
+            value = getattr(self, key)
+
+            setattr(
+                self,
+                key,
+                max(0.0, min(100.0, value))
+            )
+
+    def as_dict(self):
+
+        data = asdict(self)
+
+        data["name"] = self.name.value
+
+        data.pop("_last_asi", None)
+
+        return data
+
+
+# =========================================================
+# 5. INITIAL WORLD
+# =========================================================
+
+def initial_system_states():
+
+    return {
+
+        WorldSystem.FINANCE:
+            SystemState(
+                WorldSystem.FINANCE,
+                U=78, A=76, C=90, N=94,
+                D=94, H=51, R=65,
+                X=96, I=88
+            ),
+
+        WorldSystem.ENERGY:
+            SystemState(
+                WorldSystem.ENERGY,
+                U=70, A=68, C=82, N=82,
+                D=80, H=38, R=57,
+                X=87, I=97
+            ),
+
+        WorldSystem.SUPPLY_CHAIN:
+            SystemState(
+                WorldSystem.SUPPLY_CHAIN,
+                U=84, A=80, C=84, N=90,
+                D=96, H=58, R=72,
+                X=91, I=63
+            ),
+
+        WorldSystem.MILITARY:
+            SystemState(
+                WorldSystem.MILITARY,
+                U=76, A=73, C=87, N=85,
+                D=89, H=35, R=69,
+                X=88, I=95
+            ),
+
+        WorldSystem.INFORMATION:
+            SystemState(
+                WorldSystem.INFORMATION,
+                U=90, A=69, C=88, N=98,
+                D=99, H=55, R=78,
+                X=94, I=58
+            ),
+    }
+
+
+# =========================================================
+# 6. ASI ENGINE
+# =========================================================
+
+class ASIEngine:
+
+    def __init__(self, weights=None):
+
+        self.weights = deepcopy(
+            weights if weights is not None
+            else ASI_WEIGHTS
+        )
+
+        total = sum(self.weights.values())
+
+        if total <= 0:
+            raise ValueError(
+                "ASI weights must be positive"
+            )
+
+        self.weights = {
+            k: v / total
+            for k, v in self.weights.items()
+        }
+
+    def calculate(self, state):
+
+        return round(
+            sum(
+                getattr(state, key) * weight
+                for key, weight in self.weights.items()
+            ),
+            2
+        )
+
+    def zone(self, state):
+
+        return classify_asi(
+            self.calculate(state)
+        )
+
+    def phase(self, state):
+
+        return determine_ai_phase(
+            self.calculate(state)
+        )
+
+
+# =========================================================
+# 7. CAUSAL WORLD GRAPH
+# =========================================================
+
+"""
+核心思想：
+
+source system
+    ↓
+causal channel
+    ↓
+target variable
+
+例如：
+
+金融 → 供应链
+    影响 N / D / I
+
+能源 → 供应链
+    影响 C / N / I
+
+信息 → 军事
+    影响 U / R / D
+
+军事 → 信息
+    影响 A / N / I
+
+"""
+
+DEFAULT_CAUSAL_GRAPH = {
+
+    WorldSystem.FINANCE: {
+
+        WorldSystem.ENERGY: {
+            "N": 0.25,
+            "D": 0.15,
+            "I": 0.10,
+        },
+
+        WorldSystem.SUPPLY_CHAIN: {
+            "N": 0.40,
+            "D": 0.30,
+            "I": 0.20,
+        },
+
+        WorldSystem.MILITARY: {
+            "A": 0.15,
+            "D": 0.15,
+        },
+
+        WorldSystem.INFORMATION: {
+            "N": 0.35,
+            "D": 0.20,
+        },
+    },
+
+
+    WorldSystem.ENERGY: {
+
+        WorldSystem.FINANCE: {
+            "I": 0.30,
+            "C": 0.15,
+        },
+
+        WorldSystem.SUPPLY_CHAIN: {
+            "C": 0.35,
+            "N": 0.30,
+            "I": 0.25,
+        },
+
+        WorldSystem.MILITARY: {
+            "C": 0.25,
+            "I": 0.20,
+        },
+
+        WorldSystem.INFORMATION: {
+            "C": 0.10,
+        },
+    },
+
+
+    WorldSystem.SUPPLY_CHAIN: {
+
+        WorldSystem.FINANCE: {
+            "I": 0.20,
+            "D": 0.15,
+        },
+
+        WorldSystem.ENERGY: {
+            "C": 0.20,
+            "I": 0.20,
+        },
+
+        WorldSystem.MILITARY: {
+            "C": 0.35,
+            "D": 0.20,
+            "I": 0.25,
+        },
+
+        WorldSystem.INFORMATION: {
+            "N": 0.25,
+            "D": 0.20,
+        },
+    },
+
+
+    WorldSystem.MILITARY: {
+
+        WorldSystem.FINANCE: {
+            "A": 0.20,
+            "I": 0.25,
+        },
+
+        WorldSystem.ENERGY: {
+            "I": 0.30,
+            "C": 0.20,
+        },
+
+        WorldSystem.SUPPLY_CHAIN: {
+            "I": 0.35,
+            "D": 0.20,
+        },
+
+        WorldSystem.INFORMATION: {
+            "A": 0.30,
+            "N": 0.35,
+            "D": 0.25,
+        },
+    },
+
+
+    WorldSystem.INFORMATION: {
+
+        WorldSystem.FINANCE: {
+            "D": 0.30,
+            "N": 0.25,
+        },
+
+        WorldSystem.ENERGY: {
+            "D": 0.15,
+            "N": 0.15,
+        },
+
+        WorldSystem.SUPPLY_CHAIN: {
+            "N": 0.30,
+            "D": 0.25,
+        },
+
+        WorldSystem.MILITARY: {
+            "U": 0.30,
+            "R": 0.30,
+            "D": 0.25,
+        },
+    },
+}
+
+
+# =========================================================
+# 8. CAUSAL ENGINE
+# =========================================================
+
+class CausalEngine:
+
+    def __init__(self, graph=None):
+
+        self.graph = deepcopy(
+            graph if graph is not None
+            else DEFAULT_CAUSAL_GRAPH
+        )
+
+    def propagate(self, world):
+
+        asi = {
+            system:
+            world.asi.calculate(state)
+
+            for system, state
+            in world.systems.items()
+        }
+
+        updates = {
+            system: {}
+            for system in SYSTEMS
+        }
+
+        for source in SYSTEMS:
+
+            for target in SYSTEMS:
+
+                if source == target:
+                    continue
+
+                channels = (
+                    self.graph
+                    .get(source, {})
+                    .get(target, {})
+                )
+
+                if not channels:
+                    continue
+
+                delta = (
+                    asi[source] -
+                    asi[target]
+                ) / 100.0
+
+                for variable, coefficient in channels.items():
+
+                    shock = (
+                        delta *
+                        coefficient *
+                        1.5
+                    )
+
+                    updates[target][variable] = (
+                        updates[target].get(variable, 0)
+                        + shock
+                    )
+
+        for target, changes in updates.items():
+
+            state = world.systems[target]
+
+            for variable, value in changes.items():
+
+                current = getattr(
+                    state,
+                    variable
+                )
+
+                setattr(
+                    state,
+                    variable,
+                    current + value
+                )
+
+            state.dependency += sum(
+                abs(v)
+                for v in changes.values()
+            ) * 2.0
+
+            state.clamp()
+
+
+# =========================================================
+# 9. NONLINEAR DYNAMICS
+# =========================================================
+
+class NonlinearDynamics:
+
+    CRITICAL_STRESS = 70.0
+    CRITICAL_STABILITY = 45.0
+
+    def sigmoid(self, x):
+
+        x = max(-20, min(20, x))
+
+        return 1.0 / (
+            1.0 + math.exp(-x)
+        )
+
+    def critical_amplification(
+        self,
+        asi,
+        stability,
+    ):
+
+        # ASI 接近临界区时，
+        # 系统非线性放大
+
+        asi_pressure = self.sigmoid(
+            (asi - 82.0) / 3.0
+        )
+
+        instability = self.sigmoid(
+            (50.0 - stability) / 5.0
+        )
+
+        return (
+            1.0 +
+            3.0 *
+            asi_pressure *
+            instability
+        )
+
+    def update(self, state, asi):
+
+        # -------------------------
+        # Stress
+        # -------------------------
+
+        target_stress = max(
+            0.0,
+            (asi - 65.0) / 35.0 * 100.0
+        )
+
+        state.stress = (
+            state.stress * 0.85
+            +
+            target_stress * 0.15
+        )
+
+        # -------------------------
+        # Stability
+        # -------------------------
+
+        stress_damage = (
+            state.stress / 100.0
+        ) * 1.0
+
+        resilience_recovery = (
+            state.resilience / 100.0
+        ) * 0.15
+
+        state.stability += (
+            resilience_recovery
+            -
+            stress_damage
+        )
+
+        # -------------------------
+        # Resource dynamics
+        # -------------------------
+
+        resource_loss = (
+            state.dependency / 100.0
+        ) * 0.35
+
+        state.resources -= resource_loss
+
+        # -------------------------
+        # Failure
+        # -------------------------
+
+        instability = max(
+            0.0,
+            (45.0 - state.stability)
+            / 45.0
+        )
+
+        stress_pressure = max(
+            0.0,
+            (state.stress - 70.0)
+            / 30.0
+        )
+
+        state.failure += (
+            instability *
+            stress_pressure *
+            2.0
+        )
+
+        state.failure *= 0.995
+
+        # -------------------------
+        # Resilience
+        # -------------------------
+
+        state.resilience += (
+            0.05
+            if state.stability > 70
+            else -0.10
+        )
+
+        state.clamp()
+
+
+# =========================================================
+# 10. AI RECURSION ENGINE
+# =========================================================
+
+class AIRecursionEngine:
+
+    def evolve(self, state):
+
+        asi = (
+            0.18 * state.U +
+            0.12 * state.A +
+            0.08 * state.C +
+            0.08 * state.N +
+            0.07 * state.D +
+            0.10 * state.H +
+            0.15 * state.R +
+            0.12 * state.X +
+            0.10 * state.I
+        )
+
+        phase = determine_ai_phase(asi)
+
+        if phase == AIPhase.TOOL:
+
+            growth = 0.10
+
+        elif phase == AIPhase.AGENT:
+
+            growth = 0.20
+
+        elif phase == AIPhase.CRITICAL:
+
+            growth = 0.35
+
+        elif phase == AIPhase.SUBJECT:
+
+            growth = 0.60
+
+        else:
+
+            growth = 0.85
+
+        # 稳定性越低，递归越容易出现失真
+        stability_factor = (
+            0.4 +
+            state.stability / 100.0
+        )
+
+        pressure = (
+            state.U *
+            state.R *
+            state.N
+        ) / 1_000_000.0
+
+        gain = (
+            pressure *
+            growth *
+            stability_factor
+        )
+
+        state.R += gain
+        state.U += gain * 0.8
+        state.X += gain * 0.5
+
+        state.clamp()
+
+
+# =========================================================
+# 11. FEEDBACK ENGINE
+# =========================================================
+
+class FeedbackEngine:
+
+    def apply(self, state):
+
+        coupling = state.X / 100.0
+
+        feedback = (
+            state.U *
+            state.R *
+            state.N
+        ) / 1_000_000.0
+
+        stability_factor = (
+            0.30 +
+            0.70 *
+            state.stability / 100.0
+        )
+
+        net = (
+            feedback *
+            coupling *
+            stability_factor
+        )
+
+        state.F = round(
+            net * 100.0,
+            3
+        )
+
+        state.U += net * 0.5
+        state.R += net * 0.4
+        state.X += net * 0.3
+
+        state.clamp()
+
+
+# =========================================================
+# 12. EVENT SHOCK ENGINE
+# =========================================================
+
+class EventType(str, Enum):
+
+    AI_BREAKTHROUGH = "AI突破"
+
+    FINANCIAL_CRISIS = "金融危机"
+
+    ENERGY_SHOCK = "能源冲击"
+
+    SUPPLY_COLLAPSE = "供应链断裂"
+
+    INFORMATION_WAR = "信息系统冲击"
+
+    MILITARY_ESCALATION = "军事升级"
+
+    GLOBAL_CRISIS = "全球危机"
+
+    REGULATION = "AI监管"
+
+    DECOUPLING = "系统解耦"
+
+
+@dataclass
+class WorldEvent:
+
+    event_type: EventType
+    intensity: float = 1.0
+    duration: int = 1
+
+
+class EventEngine:
+
+    def apply(
+        self,
+        world,
+        event: WorldEvent
+    ):
+
+        k = max(
+            0.0,
+            min(3.0, event.intensity)
+        )
+
+        for state in world.systems.values():
+
+            if event.event_type == EventType.AI_BREAKTHROUGH:
+
+                state.C += 8 * k
+                state.U += 5 * k
+                state.R += 6 * k
+
+            elif event.event_type == EventType.FINANCIAL_CRISIS:
+
+                state.resources -= 8 * k
+                state.stress += 15 * k
+                state.stability -= 8 * k
+
+            elif event.event_type == EventType.ENERGY_SHOCK:
+
+                state.resources -= 10 * k
+                state.stress += 12 * k
+                state.stability -= 7 * k
+
+            elif event.event_type == EventType.SUPPLY_COLLAPSE:
+
+                state.dependency += 12 * k
+                state.resources -= 12 * k
+                state.stress += 15 * k
+
+            elif event.event_type == EventType.INFORMATION_WAR:
+
+                state.N += 8 * k
+                state.D += 5 * k
+                state.stress += 10 * k
+
+            elif event.event_type == EventType.MILITARY_ESCALATION:
+
+                state.A += 6 * k
+                state.I += 5 * k
+                state.stress += 15 * k
+                state.stability -= 10 * k
+
+            elif event.event_type == EventType.GLOBAL_CRISIS:
+
+                state.stress += 25 * k
+                state.stability -= 20 * k
+                state.resources -= 15 * k
+
+            elif event.event_type == EventType.REGULATION:
+
+                state.A -= 8 * k
+                state.H -= 12 * k
+                state.R -= 4 * k
+                state.stability += 8 * k
+
+            elif event.event_type == EventType.DECOUPLING:
+
+                state.X -= 10 * k
+                state.dependency -= 8 * k
+                state.stability += 5 * k
+
+            state.clamp()
+
+
+# =========================================================
+# 13. CASCADE ENGINE
+# =========================================================
+
+class CascadeEngine:
+
+    FAILURE_THRESHOLD = 35.0
+
+    def detect_failures(self, world):
+
+        failed = []
+
+        for system, state in world.systems.items():
+
+            if (
+                state.stability < self.FAILURE_THRESHOLD
+                or
+                state.failure > 30
+                or
+                state.resources < 25
+            ):
+
+                failed.append(system)
+
+        return failed
+
+    def propagate_failure(
+        self,
+        world,
+        failed_systems
+    ):
+
+        if not failed_systems:
+            return
+
+        for failed in failed_systems:
+
+            for target in SYSTEMS:
+
+                if target == failed:
+                    continue
+
+                # 读取因果图
+                channels = (
+                    world.causal.graph
+                    .get(failed, {})
+                    .get(target, {})
+                )
+
+                if not channels:
+                    continue
+
+                pressure = (
+                    sum(channels.values())
+                    * 2.0
+                )
+
+                target_state = (
+                    world.systems[target]
+                )
+
+                target_state.stability -= (
+                    pressure * 0.25
+                )
+
+                target_state.stress += (
+                    pressure * 0.5
+                )
+
+                target_state.dependency += (
+                    pressure * 0.2
+                )
+
+                target_state.clamp()
+
+
+# =========================================================
+# 14. CIVILIZATION SURVIVAL INDEX
+# =========================================================
+
+class SurvivalEngine:
+
+    """
+    CSI = 文明长期存活能力
+
+    不等于“发展程度”。
+
+    一个文明可能：
+
+        ASI 很高
+        但 CSI 很低
+
+    这正是 JAE 要研究的核心矛盾。
+    """
+
+    def calculate(self, world):
+
+        stability = sum(
+            s.stability
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        resources = sum(
+            s.resources
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        resilience = sum(
+            s.resilience
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        dependency = sum(
+            s.dependency
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        stress = sum(
+            s.stress
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        failures = sum(
+            s.failure
+            for s in world.systems.values()
+        ) / len(SYSTEMS)
+
+        CSI = (
+
+            stability * 0.30
+            +
+            resources * 0.20
+            +
+            resilience * 0.20
+            +
+            (100 - dependency) * 0.10
+            +
+            (100 - stress) * 0.10
+            +
+            (100 - failures) * 0.10
+
+        )
+
+        return round(
+            max(0.0, min(100.0, CSI)),
+            2
+        )
+
+
+# =========================================================
+# 15. WORLD MODEL
+# =========================================================
+
+class JAEWorldModel:
+
+    HISTORY_CAP = 500
+    GLOBAL_HISTORY_CAP = 500
+
+    def __init__(self):
+
+        self.time = 0
+
+        self.systems = (
+            initial_system_states()
+        )
+
+        self.asi = ASIEngine()
+
+        self.causal = CausalEngine()
+
+        self.feedback = FeedbackEngine()
+
+        self.recursion = AIRecursionEngine()
+
+        self.nonlinear = NonlinearDynamics()
+
+        self.events = EventEngine()
+
+        self.cascade = CascadeEngine()
+
+        self.survival = SurvivalEngine()
+
+        self.global_history = []
+
+        for state in self.systems.values():
+
+            state._last_asi = (
+                self.asi.calculate(state)
+            )
+
+    # =====================================================
+    # GLOBAL ASI
+    # =====================================================
+
+    def global_asi(self):
+
+        values = [
+            self.asi.calculate(state)
+            for state in self.systems.values()
+        ]
+
+        return round(
+            sum(values) / len(values),
+            2
+        )
+
+    # =====================================================
+    # STEP
+    # =====================================================
+
+    def step(
+        self,
+        event: Optional[WorldEvent] = None
+    ):
+
+        self.time += 1
+
+        # 1
+        # 外部事件
+
+        if event is not None:
+
+            self.events.apply(
+                self,
+                event
+            )
+
+        # 2
+        # AI递归
+
+        for state in self.systems.values():
+
+            self.recursion.evolve(
+                state
+            )
+
+        # 3
+        # 内生反馈
+
+        for state in self.systems.values():
+
+            self.feedback.apply(
+                state
+            )
+
+        # 4
+        # 因果传播
+
+        self.causal.propagate(
+            self
+        )
+
+        # 5
+        # 非线性动力学
+
+        for state in self.systems.values():
+
+            asi = self.asi.calculate(
+                state
+            )
+
+            self.nonlinear.update(
+                state,
+                asi
+            )
+
+        # 6
+        # 级联
+
+        failed = (
+            self.cascade
+            .detect_failures(self)
+        )
+
+        self.cascade.propagate_failure(
+            self,
+            failed
+        )
+
+        # 7
+        # 速度
+
+        for state in self.systems.values():
+
+            current = self.asi.calculate(
+                state
+            )
+
+            if state._last_asi is None:
+
+                state.T = 0.0
+
+            else:
+
+                state.T = round(
+                    current -
+                    state._last_asi,
+                    4
+                )
+
+            state._last_asi = current
+
+        # 8
+        # History
+
+        CSI = self.survival.calculate(
+            self
+        )
+
+        for state in self.systems.values():
+
+            asi = self.asi.calculate(
+                state
+            )
+
+            state.history.append({
+
+                "time": self.time,
+
+                "ASI": asi,
+
+                "phase":
+                    determine_ai_phase(
+                        asi
+                    ).value,
+
+                "T": state.T,
+
+                "F": state.F,
+
+                "stability":
+                    round(
+                        state.stability,
+                        2
+                    ),
+
+                "stress":
+                    round(
+                        state.stress,
+                        2
+                    ),
+
+                "failure":
+                    round(
+                        state.failure,
+                        2
+                    ),
+
+                "resources":
+                    round(
+                        state.resources,
+                        2
+                    ),
+
+            })
+
+            if len(state.history) > self.HISTORY_CAP:
+
+                state.history.pop(0)
+
+        snapshot = self.snapshot(
+            CSI,
+            failed
+        )
+
+        return snapshot
+
+    # =====================================================
+    # SNAPSHOT
+    # =====================================================
+
+    def snapshot(
+        self,
+        CSI,
+        failed
+    ):
+
+        ranking = []
+
+        for state in self.systems.values():
+
+            asi = self.asi.calculate(
+                state
+            )
+
+            ranking.append({
+
+                "system":
+                    state.name.value,
+
+                "ASI":
+                    asi,
+
+                "zone":
+                    classify_asi(
+                        asi
+                    ).value,
+
+                "phase":
+                    determine_ai_phase(
+                        asi
+                    ).value,
+
+                "T":
+                    state.T,
+
+                "stability":
+                    round(
+                        state.stability,
+                        2
+                    ),
+
+                "failure":
+                    round(
+                        state.failure,
+                        2
+                    ),
+
+            })
+
+        ranking.sort(
+            key=lambda x:
+            x["ASI"],
+            reverse=True
+        )
+
+        snap = {
+
+            "time":
+                self.time,
+
+            "global_ASI":
+                self.global_asi(),
+
+            "CSI":
+                CSI,
+
+            "failed_systems":
+                [
+                    s.value
+                    for s in failed
+                ],
+
+            "ranking":
+                ranking,
+
+        }
+
+        self.global_history.append(
+            deepcopy(snap)
+        )
+
+        if (
+            len(self.global_history)
+            > self.GLOBAL_HISTORY_CAP
+        ):
+
+            self.global_history.pop(0)
+
+        return snap
+
+    # =====================================================
+    # RUN
+    # =====================================================
+
+    def run(
+        self,
+        steps=20,
+        event_schedule=None
+    ):
+
+        results = []
+
+        event_schedule = (
+            event_schedule or {}
+        )
+
+        for step in range(
+            1,
+            steps + 1
+        ):
+
+            event = (
+                event_schedule.get(step)
+            )
+
+            results.append(
+                self.step(event)
+            )
+
+        return results
+
+    # =====================================================
+    # REPORT
+    # =====================================================
+
+    def report(self):
+
+        CSI = self.survival.calculate(
+            self
+        )
+
+        ranking = sorted(
+
+            self.systems.values(),
+
+            key=lambda state:
+            self.asi.calculate(state),
+
+            reverse=True
+
+        )
+
+        print()
+        print("=" * 100)
+        print(
+            "JAE WORLD MODEL v7.0"
+        )
+        print(
+            "TRUE WORLD EVOLUTION ENGINE"
+        )
+        print("=" * 100)
+
+        print(
+            f"TIME={self.time}"
+            f" | GLOBAL ASI={self.global_asi():.2f}"
+            f" | CSI={CSI:.2f}"
+        )
+
+        print("-" * 100)
+
+        for i, state in enumerate(
+            ranking,
+            1
+        ):
+
+            asi = self.asi.calculate(
+                state
+            )
+
+            print(
+
+                f"{i}. "
+                f"{state.name.value:<6}"
+
+                f" ASI={asi:>6.2f}"
+
+                f" | "
+                f"{determine_ai_phase(asi).value:<8}"
+
+                f" | T={state.T:+.3f}"
+
+                f" | R={state.R:>6.2f}"
+
+                f" | X={state.X:>6.2f}"
+
+                f" | S={state.stability:>6.2f}"
+
+                f" | Stress={state.stress:>6.2f}"
+
+                f" | Fail={state.failure:>6.2f}"
+
+            )
+
+        print("-" * 100)
+
+        failed = (
+            self.cascade
+            .detect_failures(self)
+        )
+
+        if failed:
+
+            print(
+                "⚠ SYSTEM FAILURES:"
+            )
+
+            for system in failed:
+
+                print(
+                    "   ",
+                    system.value
+                )
+
+        else:
+
+            print(
+                "SYSTEM STATUS: STABLE"
+            )
+
+        print("=" * 100)
+
+    # =====================================================
+    # SAVE
+    # =====================================================
+
+    def save(
+        self,
+        path="jae_world_model_v7_0.json"
+    ):
+
+        data = {
+
+            "version":
+                "JAE World Model v7.0",
+
+            "time":
+                self.time,
+
+            "global_ASI":
+                self.global_asi(),
+
+            "CSI":
+                self.survival.calculate(
+                    self
+                ),
+
+            "systems": {
+
+                system.value:
+                state.as_dict()
+
+                for system, state
+                in self.systems.items()
+
+            },
+
+            "history":
+                self.global_history,
+
+            "causal_graph": {
+
+                source.value: {
+
+                    target.value:
+                    channels
+
+                    for target, channels
+                    in targets.items()
+
+                }
+
+                for source, targets
+                in self.causal.graph.items()
+
+            },
+
+        }
+
+        with open(
+            path,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        print(
+            f"[JAE] Saved: {path}"
+        )
+
+
+# =========================================================
+# 16. MONTE CARLO WORLD ENGINE
+# =========================================================
+
+class MonteCarloWorldEngine:
+
+    def __init__(
+        self,
+        world_factory,
+        iterations=100
+    ):
+
+        self.world_factory = (
+            world_factory
+        )
+
+        self.iterations = iterations
+
+    def run(
+        self,
+        steps=50
+    ):
+
+        results = []
+
+        event_types = list(
+            EventType
+        )
+
+        for _ in range(
+            self.iterations
+        ):
+
+            world = (
+                self.world_factory()
+            )
+
+            # ---------------------------------------------
+            # 初值扰动
+            # ---------------------------------------------
+
+            for state in (
+                world.systems.values()
+            ):
+
+                for variable in [
+
+                    "U", "A", "C",
+                    "N", "D", "H",
+                    "R", "X", "I"
+
+                ]:
+
+                    value = (
+                        getattr(
+                            state,
+                            variable
+                        )
+                        +
+                        random.gauss(
+                            0,
+                            2
+                        )
+                    )
+
+                    setattr(
+                        state,
+                        variable,
+                        max(
+                            0,
+                            min(
+                                100,
+                                value
+                            )
+                        )
+                    )
+
+            # ---------------------------------------------
+            # 随机事件世界
+            # ---------------------------------------------
+
+            schedule = {}
+
+            for step in range(
+                1,
+                steps + 1
+            ):
+
+                if random.random() < 0.08:
+
+                    event_type = (
+                        random.choice(
+                            event_types
+                        )
+                    )
+
+                    intensity = random.uniform(
+                        0.5,
+                        1.5
+                    )
+
+                    schedule[step] = (
+                        WorldEvent(
+                            event_type,
+                            intensity
+                        )
+                    )
+
+            world.run(
+                steps,
+                schedule
+            )
+
+            CSI = (
+                world.survival
+                .calculate(world)
+            )
+
+            results.append({
+
+                "CSI": CSI,
+
+                "ASI":
+                    world.global_asi(),
+
+                "failed":
+                    len(
+                        world.cascade
+                        .detect_failures(
+                            world
+                        )
+                    ),
+
+            })
+
+        # ---------------------------------------------
+        # Summary
+        # ---------------------------------------------
+
+        csi = [
+            r["CSI"]
+            for r in results
+        ]
+
+        asi = [
+            r["ASI"]
+            for r in results
+        ]
+
+        failures = [
+            r["failed"]
+            for r in results
+        ]
+
+        return {
+
+            "iterations":
+                self.iterations,
+
+            "mean_CSI":
+                round(
+                    sum(csi)
+                    / len(csi),
+                    2
+                ),
+
+            "min_CSI":
+                round(
+                    min(csi),
+                    2
+                ),
+
+            "max_CSI":
+                round(
+                    max(csi),
+                    2
+                ),
+
+            "mean_ASI":
+                round(
+                    sum(asi)
+                    / len(asi),
+                    2
+                ),
+
+            "world_failure_probability":
+                round(
+                    sum(
+                        x > 0
+                        for x in failures
+                    )
+                    / len(failures),
+                    3
+                ),
+
+            "complete_system_failure_probability":
+                round(
+                    sum(
+                        x >= len(SYSTEMS)
+                        for x in failures
+                    )
+                    / len(failures),
+                    3
+                ),
+
+        }
+
+
+# =========================================================
+# 17. FACTORY
+# =========================================================
+
+def create_world():
+
+    return JAEWorldModel()
+
+
+# =========================================================
+# 18. DEMO
+# =========================================================
+
+if __name__ == "__main__":
+
+    print()
+    print(
+        "[JAE v7.0] INITIAL WORLD SCAN"
+    )
+
+    world = create_world()
+
+    world.report()
+
+    # -----------------------------------------------------
+    # Scenario 1
+    # -----------------------------------------------------
+
+    print()
+    print(
+        "[JAE v7.0] AI BREAKTHROUGH"
+    )
+
+    world.step(
+        WorldEvent(
+            EventType.AI_BREAKTHROUGH,
+            intensity=1.0
+        )
+    )
+
+    world.report()
+
+    # -----------------------------------------------------
+    # Scenario 2
+    # -----------------------------------------------------
+
+    print()
+    print(
+        "[JAE v7.0] GLOBAL CRISIS"
+    )
+
+    world.step(
+        WorldEvent(
+            EventType.GLOBAL_CRISIS,
+            intensity=1.0
+        )
+    )
+
+    world.report()
+
+    # -----------------------------------------------------
+    # Long simulation
+    # -----------------------------------------------------
+
+    print()
+    print(
+        "[JAE v7.0] 50-STEP WORLD EVOLUTION"
+    )
+
+    world.run(
+        steps=50
+    )
+
+    world.report()
+
+    # -----------------------------------------------------
+    # Monte Carlo
+    # -----------------------------------------------------
+
+    print()
+    print(
+        "[JAE v7.0] MONTE CARLO"
+    )
+
+    mc = MonteCarloWorldEngine(
+        create_world,
+        iterations=100
+    )
+
+    result = mc.run(
+        steps=50
+    )
+
+    print(
+        json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2
+        )
+    )
+
+    # -----------------------------------------------------
+    # Save
+    # -----------------------------------------------------
+
+    world.save(
+        "jae_world_model_v7_0.json"
+    )
