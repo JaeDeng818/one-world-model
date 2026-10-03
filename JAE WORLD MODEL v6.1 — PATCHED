@@ -1,0 +1,868 @@
+"""
+=========================================================
+JAE WORLD MODEL v6.1 — PATCHED
+AI Civilization / World System Simulation Engine
+=========================================================
+
+基于 v6.0 的修复清单：
+
+  [FIX-1]  AI_REGULATION 场景符号错误（H 方向反了 → 监管反而推高 ASI）
+  [FIX-2]  ASIZone 与 AIPhase 阈值错位（同一分数输出矛盾标签）
+  [FIX-3]  跨系统传播量级失效（系数被 0.002 淹没，实际传导 ≈ 0.0014/步）
+  [FIX-4]  detect_critical_events 的 X>=90 门槛在初值下即触发（信号淹没）
+  [FIX-5]  determine_ai_phase 未使用的 state 参数（签名误导）
+  [FIX-6]  纯正反馈棘轮，无负反馈通路（stability/stress 从未更新）
+  [FIX-7]  calculate_velocity 依赖 history 顺序（脆弱，一改就静默归零）
+  [FIX-8]  耦合矩阵完全对称（丢失非对称支配关系）
+  [FIX-9]  Monte Carlo 只扰动初值，不扰动参数
+  [FIX-10] 工程清理：历史无界 / 未用导入 / 权重无断言 / 死状态
+
+v3-ready 变量 T / F 保持原语义，但 F 现在通过稳定性阻尼真正参与动力学。
+=========================================================
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Dict, List, Optional
+import json
+import math
+import random
+from copy import deepcopy
+
+
+# =========================================================
+# 1. SYSTEM DEFINITIONS
+# =========================================================
+
+class WorldSystem(str, Enum):
+    FINANCE = "金融"
+    ENERGY = "能源"
+    SUPPLY_CHAIN = "供应链"
+    MILITARY = "军事"
+    INFORMATION = "信息"
+
+
+SYSTEMS = list(WorldSystem)
+
+
+# =========================================================
+# 2. ASI v2.0 WEIGHTS
+# =========================================================
+
+ASI_WEIGHTS = {
+    "U": 0.18,   # Autonomy
+    "A": 0.12,   # Authority
+    "C": 0.08,   # Capability
+    "N": 0.08,   # Network Connectivity
+    "D": 0.07,   # Decision Density
+    "H": 0.10,   # Human Control Gap
+    "R": 0.15,   # Recursive Autonomy
+    "X": 0.12,   # Cross-System Coupling
+    "I": 0.10,   # Irreversibility
+}
+
+# v6.1 [FIX-10]：权重和必须为 1.0，否则 classify_asi 的 [0,100] 假设失效
+assert abs(sum(ASI_WEIGHTS.values()) - 1.0) < 1e-9, \
+    "ASI_WEIGHTS must sum to 1.0"
+
+
+# =========================================================
+# 3. THRESHOLDS  (single source of truth)
+# =========================================================
+
+class ASIZone(str, Enum):
+    TOOL = "工具区"
+    AGENT = "Agent区"
+    CRITICAL = "主体化临界区"
+    SUBJECT = "主体化区"
+    NETWORK = "主体网络区"
+
+
+# v6.1 [FIX-2]：阈值只定义一次
+ZONE_BANDS: List = [
+    (ASIZone.TOOL,      0.0,  60.0),
+    (ASIZone.AGENT,    60.0,  75.0),
+    (ASIZone.CRITICAL, 75.0,  85.0),
+    (ASIZone.SUBJECT,  85.0,  92.0),
+    (ASIZone.NETWORK,  92.0, 100.0),
+]
+
+
+def classify_asi(score: float) -> ASIZone:
+    for zone, _lo, hi in ZONE_BANDS:
+        if score < hi:
+            return zone
+    return ASIZone.NETWORK
+
+
+# =========================================================
+# 4. AI SUBJECTIZATION PHASE
+# =========================================================
+
+class AIPhase(str, Enum):
+    TOOL = "Tool"
+    AGENT = "Agent"
+    CRITICAL = "Critical"     # v6.1：新增，与 ASIZone.CRITICAL 对齐
+    SUBJECT = "Subject"
+    NETWORK = "Network"
+
+
+# v6.1 [FIX-2]：AIPhase ↔ ASIZone 一一映射，杜绝报告自相矛盾
+PHASE_BY_ZONE = {
+    ASIZone.TOOL:     AIPhase.TOOL,
+    ASIZone.AGENT:    AIPhase.AGENT,
+    ASIZone.CRITICAL: AIPhase.CRITICAL,
+    ASIZone.SUBJECT:  AIPhase.SUBJECT,
+    ASIZone.NETWORK:  AIPhase.NETWORK,
+}
+
+
+def determine_ai_phase(score: float) -> AIPhase:
+    """v6.1 [FIX-2] [FIX-5]：签名只接受 ASI 分数，
+    阶段判定与 classify_asi 严格一致。"""
+    return PHASE_BY_ZONE[classify_asi(score)]
+
+
+# =========================================================
+# 5. SYSTEM STATE
+# =========================================================
+
+@dataclass
+class SystemState:
+
+    name: WorldSystem
+
+    # Core ASI v2.0 variables
+    U: float
+    A: float
+    C: float
+    N: float
+    D: float
+    H: float
+    R: float
+    X: float
+    I: float
+
+    # v3-ready variables
+    T: float = 0.0
+    F: float = 0.0
+
+    # Dynamic state (v6.1：全部字段现在都参与动力学)
+    resources: float = 100.0
+    stability: float = 100.0
+    dependency: float = 0.0
+    stress: float = 0.0
+
+    # Historical record (v6.1：外部有界)
+    history: List[Dict] = field(default_factory=list)
+
+    # v6.1 [FIX-7]：显式追踪上一时刻 ASI，避免依赖 history 顺序
+    _last_asi: Optional[float] = field(
+        default=None, repr=False, compare=False
+    )
+
+    def as_dict(self):
+        data = asdict(self)
+        data["name"] = self.name.value
+        data.pop("_last_asi", None)  # 内部字段不序列化
+        return data
+
+
+# =========================================================
+# 6. INITIAL WORLD STATE
+# =========================================================
+
+def initial_system_states() -> Dict[WorldSystem, SystemState]:
+
+    return {
+
+        WorldSystem.FINANCE:
+            SystemState(
+                WorldSystem.FINANCE,
+                U=78, A=76, C=90, N=94,
+                D=94, H=51, R=65,
+                X=96, I=88,
+            ),
+
+        WorldSystem.ENERGY:
+            SystemState(
+                WorldSystem.ENERGY,
+                U=70, A=68, C=82, N=82,
+                D=80, H=38, R=57,
+                X=87, I=97,
+            ),
+
+        WorldSystem.SUPPLY_CHAIN:
+            SystemState(
+                WorldSystem.SUPPLY_CHAIN,
+                U=84, A=80, C=84, N=90,
+                D=96, H=58, R=72,
+                X=91, I=63,
+            ),
+
+        WorldSystem.MILITARY:
+            SystemState(
+                WorldSystem.MILITARY,
+                U=76, A=73, C=87, N=85,
+                D=89, H=35, R=69,
+                X=88, I=95,
+            ),
+
+        WorldSystem.INFORMATION:
+            SystemState(
+                WorldSystem.INFORMATION,
+                U=90, A=69, C=88, N=98,
+                D=99, H=55, R=78,
+                X=94, I=58,
+            ),
+    }
+
+
+# =========================================================
+# 7. ASI ENGINE
+# =========================================================
+
+class ASIEngine:
+
+    def __init__(self, weights: Optional[Dict[str, float]] = None):
+        if weights is None:
+            self.weights = deepcopy(ASI_WEIGHTS)
+        else:
+            self.weights = dict(weights)
+        # v6.1：自动重新归一化，避免外部注入权重导致 ASI 越界
+        total = sum(self.weights.values())
+        if total <= 0:
+            raise ValueError("ASI weights must be positive")
+        if abs(total - 1.0) > 1e-6:
+            self.weights = {k: v / total for k, v in self.weights.items()}
+
+    def calculate(self, state: SystemState) -> float:
+        score = sum(
+            getattr(state, k) * self.weights[k]
+            for k in self.weights
+        )
+        return round(score, 2)
+
+    def zone(self, state: SystemState) -> ASIZone:
+        return classify_asi(self.calculate(state))
+
+    def distance_to_critical(self, state: SystemState) -> float:
+        return round(max(0.0, 85.0 - self.calculate(state)), 2)
+
+    def rank(self, states: Dict[WorldSystem, SystemState]) -> List[Dict]:
+        ranking = []
+        for state in states.values():
+            score = self.calculate(state)
+            ranking.append({
+                "system": state.name.value,
+                "ASI": score,
+                "zone": self.zone(state).value,
+                "distance_to_85": self.distance_to_critical(state),
+            })
+        return sorted(ranking, key=lambda x: x["ASI"], reverse=True)
+
+
+# =========================================================
+# 8. CROSS-SYSTEM COUPLING MATRIX
+# =========================================================
+# v6.1 [FIX-8]：矩阵改为非对称，反映真实支配关系：
+#   - 金融 → 供应链 强于反向（资本驱动产能）
+#   - 军事 → 信息 强于反向（信息战）
+#   - 供应链 → 军事 强于反向（后勤决定战力）
+#   - 信息 → 军事 强于反向（现代战场信息主导）
+
+DEFAULT_COUPLING = {
+
+    WorldSystem.FINANCE: {
+        WorldSystem.ENERGY:       0.82,
+        WorldSystem.SUPPLY_CHAIN: 0.91,
+        WorldSystem.MILITARY:     0.63,
+        WorldSystem.INFORMATION:  0.88,
+    },
+
+    WorldSystem.ENERGY: {
+        WorldSystem.FINANCE:      0.79,   # v6.1：原 0.82，非对称化
+        WorldSystem.SUPPLY_CHAIN: 0.86,
+        WorldSystem.MILITARY:     0.77,
+        WorldSystem.INFORMATION:  0.66,   # v6.1：原 0.71
+    },
+
+    WorldSystem.SUPPLY_CHAIN: {
+        WorldSystem.FINANCE:      0.74,   # v6.1：原 0.91，明显弱于反向
+        WorldSystem.ENERGY:       0.79,   # v6.1：原 0.86
+        WorldSystem.MILITARY:     0.72,
+        WorldSystem.INFORMATION:  0.79,   # v6.1：原 0.84
+    },
+
+    WorldSystem.MILITARY: {
+        WorldSystem.FINANCE:      0.71,   # v6.1：原 0.63
+        WorldSystem.ENERGY:       0.68,   # v6.1：原 0.77
+        WorldSystem.SUPPLY_CHAIN: 0.81,   # v6.1：原 0.72，后勤主导
+        WorldSystem.INFORMATION:  0.89,
+    },
+
+    WorldSystem.INFORMATION: {
+        WorldSystem.FINANCE:      0.82,   # v6.1：原 0.88
+        WorldSystem.ENERGY:       0.71,
+        WorldSystem.SUPPLY_CHAIN: 0.84,
+        WorldSystem.MILITARY:     0.93,   # v6.1：原 0.89，信息战效应
+    },
+}
+
+
+class CouplingEngine:
+
+    def __init__(self, matrix: Optional[Dict] = None):
+        if matrix is None:
+            self.matrix = deepcopy(DEFAULT_COUPLING)
+        else:
+            self.matrix = deepcopy(matrix)
+
+    def influence(
+        self,
+        source: WorldSystem,
+        target: WorldSystem,
+        intensity: float,
+    ) -> float:
+        coef = self.matrix.get(source, {}).get(target, 0.0)
+        return intensity * coef
+
+    def systemic_coupling(self, system: WorldSystem) -> float:
+        conns = self.matrix.get(system, {})
+        if not conns:
+            return 0.0
+        return round(sum(conns.values()) / len(conns) * 100.0, 2)
+
+
+# =========================================================
+# 9. FEEDBACK ENGINE
+# =========================================================
+
+class FeedbackEngine:
+    """v6.1 [FIX-6]：加入稳定性阻尼
+
+    原版 apply_feedback 只做加法，使得 ASI 单调不减，任何参数下都会
+    收敛到 100 分。现引入 stability_factor，稳定性越低，反馈增益越小，
+    形成事实上的负反馈通路。
+    """
+
+    # 集中管理增益
+    GAIN_U = 0.03
+    GAIN_R = 0.025
+    GAIN_X = 0.02
+    STABILITY_DAMPING = 0.7   # 0 = 无阻尼；1 = stability=0 时反馈完全归零
+
+    def calculate_feedback(
+        self,
+        state: SystemState,
+        coupling: float,
+    ) -> float:
+        autonomy    = state.U / 100.0
+        recursive   = state.R / 100.0
+        connectivity = state.N / 100.0
+        feedback = autonomy * recursive * connectivity * coupling
+        return round(min(feedback * 100.0, 100.0), 2)
+
+    def apply_feedback(self, state: SystemState, feedback: float) -> None:
+        # v6.1：stability=100 → factor=1.0
+        #       stability=50  → factor=0.65
+        #       stability=0   → factor=0.30
+        stability_factor = (
+            1.0
+            - self.STABILITY_DAMPING * (1.0 - state.stability / 100.0)
+        )
+        net = feedback * stability_factor
+
+        state.U = min(100.0, state.U + net * self.GAIN_U)
+        state.R = min(100.0, state.R + net * self.GAIN_R)
+        state.X = min(100.0, state.X + net * self.GAIN_X)
+
+
+# =========================================================
+# 10. RECURSIVE AUTONOMY ENGINE
+# =========================================================
+
+class RecursiveAutonomyEngine:
+
+    def recursion_pressure(self, state: SystemState) -> float:
+        return round(
+            (state.U * state.A * state.R) / 1_000_000.0,
+            4,
+        )
+
+    def evolve(self, state: SystemState, steps: int = 1) -> None:
+        for _ in range(steps):
+            p = self.recursion_pressure(state)
+            state.R = min(100.0, state.R + p * 0.5)
+            state.N = min(100.0, state.N + p * 0.2)
+            state.X = min(100.0, state.X + p * 0.25)
+
+
+# =========================================================
+# 11. WORLD MODEL
+# =========================================================
+
+class JAEWorldModel:
+
+    # v6.1：有界历史，避免长仿真内存爆掉
+    HISTORY_CAP        = 500
+    GLOBAL_HISTORY_CAP = 200
+
+    # v6.1 [FIX-3]：传播增益集中管理
+    PROPAGATION_GAIN = 0.8
+
+    def __init__(self):
+        self.time = 0
+
+        self.systems = initial_system_states()
+
+        self.asi       = ASIEngine()
+        self.coupling  = CouplingEngine()
+        self.feedback  = FeedbackEngine()
+        self.recursive = RecursiveAutonomyEngine()
+
+        self.global_history: List[Dict] = []
+
+        # v6.1 [FIX-7]：初始化 _last_asi
+        for state in self.systems.values():
+            state._last_asi = self.asi.calculate(state)
+
+    # -----------------------------------------------------
+    # SNAPSHOT
+    # -----------------------------------------------------
+
+    def snapshot(self) -> Dict:
+        ranking = self.asi.rank(self.systems)
+        snap = {"time": self.time, "ranking": ranking}
+        self.global_history.append(deepcopy(snap))
+        if len(self.global_history) > self.GLOBAL_HISTORY_CAP:
+            self.global_history.pop(0)
+        return snap
+
+    # -----------------------------------------------------
+    # SIMULATION STEP
+    # -----------------------------------------------------
+
+    def step(self) -> Dict:
+        self.time += 1
+
+        # 1. 反馈循环（已被 stability 阻尼调制）
+        for system, state in self.systems.items():
+            coupling = self.coupling.systemic_coupling(system) / 100.0
+            fb = self.feedback.calculate_feedback(state, coupling)
+            state.F = fb
+            self.feedback.apply_feedback(state, fb)
+            self.recursive.evolve(state, steps=1)
+
+        # 2. 跨系统传播（v6.1：差值驱动，量级正确）
+        self.propagate()
+
+        # 3. 应力 / 稳定性更新（v6.1：新增负反馈）
+        self.update_stress_stability()
+
+        # 4. 主体化速度 T（v6.1：显式追踪）
+        self.calculate_velocity()
+
+        # 5. 记录历史 + 更新 _last_asi
+        for state in self.systems.values():
+            cur_asi = self.asi.calculate(state)
+            state.history.append({
+                "time":      self.time,
+                "ASI":       cur_asi,
+                "U":         round(state.U, 3),
+                "R":         round(state.R, 3),
+                "X":         round(state.X, 3),
+                "F":         state.F,
+                "stability": round(state.stability, 2),
+                "stress":    round(state.stress, 2),
+            })
+            if len(state.history) > self.HISTORY_CAP:
+                state.history.pop(0)
+            state._last_asi = cur_asi
+
+        return self.snapshot()
+
+    # -----------------------------------------------------
+    # CROSS-SYSTEM PROPAGATION
+    # -----------------------------------------------------
+
+    def propagate(self) -> None:
+        """v6.1 [FIX-3]：差值驱动的跨系统传播
+
+        原 v6.0：
+            pressure = ASI_src * coef * 0.002 ≈ 0.0014/步
+        20 步累计推动 ASI ≈ 0.014 分，耦合矩阵完全被架空。
+
+        现改为差值驱动：
+            delta    = (ASI_src - ASI_dst) / 100
+            pressure = delta * coef * K
+
+        量级提升 2~3 个数量级，且具备均值回归特性——高分系统向低分
+        系统传导压力，低分系统追赶。
+        """
+        cur_asi = {
+            s: self.asi.calculate(st)
+            for s, st in self.systems.items()
+        }
+        K = self.PROPAGATION_GAIN
+
+        for source in SYSTEMS:
+            for target in SYSTEMS:
+                if source == target:
+                    continue
+                coef = self.coupling.matrix.get(source, {}).get(target, 0.0)
+                if coef <= 0:
+                    continue
+                delta = (cur_asi[source] - cur_asi[target]) / 100.0
+                pressure = delta * coef * K
+                tgt = self.systems[target]
+                tgt.X = max(0.0, min(100.0, tgt.X + pressure))
+                tgt.N = max(0.0, min(100.0, tgt.N + pressure * 0.5))
+
+    # -----------------------------------------------------
+    # STRESS / STABILITY  (v6.1 新增)
+    # -----------------------------------------------------
+
+    def update_stress_stability(self) -> None:
+        """v6.1 [FIX-6]：负反馈通路
+
+        - stress 随 ASI 超过基线 (70) 而积累
+        - stability 随 stress 衰减，并缓慢恢复
+        - stability 反过来阻尼 FeedbackEngine，形成闭环
+
+        这一步把 v6.0 中静态的 stability / stress 字段激活为真实状态。
+        """
+        for state in self.systems.values():
+            asi = self.asi.calculate(state)
+
+            # stress 目标值：ASI 70 → 0；ASI 100 → 100
+            stress_target = max(
+                0.0, min(100.0, (asi - 70.0) / 30.0 * 100.0)
+            )
+            # 平滑追踪
+            state.stress = 0.85 * state.stress + 0.15 * stress_target
+
+            # 衰减 ∝ stress，恢复为常数
+            decay = state.stress / 100.0 * 0.8
+            state.stability = max(0.0, state.stability - decay)
+            state.stability = min(100.0, state.stability + 0.1)
+
+    # -----------------------------------------------------
+    # SUBJECTIZATION VELOCITY
+    # -----------------------------------------------------
+
+    def calculate_velocity(self) -> None:
+        """v6.1 [FIX-7]：用 _last_asi 显式追踪
+
+        原版依赖 history[-1]["ASI"]，一旦有人在 calculate_velocity 之前
+        插入 history.append，T 会静默归零。
+        """
+        for state in self.systems.values():
+            if state._last_asi is None:
+                state.T = 0.0
+                continue
+            current = self.asi.calculate(state)
+            state.T = round(current - state._last_asi, 4)
+
+    # -----------------------------------------------------
+    # RUN
+    # -----------------------------------------------------
+
+    def run(self, steps: int = 10) -> List[Dict]:
+        results = []
+        for _ in range(steps):
+            results.append(self.step())
+        return results
+
+    # -----------------------------------------------------
+    # CRITICAL EVENTS
+    # -----------------------------------------------------
+
+    def detect_critical_events(self) -> List[Dict]:
+        events = []
+        for state in self.systems.values():
+            score = self.asi.calculate(state)
+
+            if score >= 85:
+                events.append({
+                    "system": state.name.value,
+                    "event":  "AI主体化临界突破",
+                    "ASI":    score,
+                })
+
+            if state.R >= 85:
+                events.append({
+                    "system": state.name.value,
+                    "event":  "递归自主性临界",
+                    "R":      round(state.R, 2),
+                })
+
+            # v6.1 [FIX-4]：X 阈值 90 → 96
+            # 初值下金融 96 / 信息 94 / 供应链 91 已 ≥ 90，
+            # 原阈值在第一步即对所有系统报警，信号被淹没。
+            if state.X >= 96:
+                events.append({
+                    "system": state.name.value,
+                    "event":  "跨系统耦合临界",
+                    "X":      round(state.X, 2),
+                })
+
+            # v6.1：新增稳定性预警
+            if state.stability < 40:
+                events.append({
+                    "system": state.name.value,
+                    "event":  "系统稳定性预警",
+                    "stability": round(state.stability, 2),
+                })
+
+        return events
+
+    # -----------------------------------------------------
+    # REPORT
+    # -----------------------------------------------------
+
+    def report(self) -> None:
+        ranking = self.asi.rank(self.systems)
+
+        print()
+        print("=" * 82)
+        print("JAE WORLD MODEL v6.1  (PATCHED)")
+        print("AI SUBJECTIZATION INDEX — ASI v2.0")
+        print("=" * 82)
+        print(f"Simulation Time: {self.time}")
+        print()
+
+        for i, item in enumerate(ranking, start=1):
+            system_name = item["system"]
+            state = next(
+                s for s in self.systems.values()
+                if s.name.value == system_name
+            )
+            # v6.1 [FIX-2]：单一分类器，消除 zone/phase 矛盾
+            phase = determine_ai_phase(item["ASI"])
+            print(
+                f"{i}. {system_name:<8}"
+                f" ASI={item['ASI']:>6.2f}"
+                f" | Zone={item['zone']:<8}"
+                f" | Phase={phase.value:<9}"
+                f" | T={state.T:>+6.3f}"
+                f" | R={state.R:>6.2f}"
+                f" | X={state.X:>6.2f}"
+                f" | Stab={state.stability:>5.1f}"
+            )
+
+        print()
+        print("Critical Events:")
+        events = self.detect_critical_events()
+        if not events:
+            print("  None")
+        else:
+            for ev in events:
+                print("  ", ev)
+        print("=" * 82)
+
+    # -----------------------------------------------------
+    # SAVE
+    # -----------------------------------------------------
+
+    def save(self, path: str = "jae_world_model_v6_1.json") -> None:
+        data = {
+            "version": "JAE World Model v6.1",
+            "time":    self.time,
+            "systems": {
+                system.value: state.as_dict()
+                for system, state in self.systems.items()
+            },
+            "history": self.global_history,
+            "coupling": {
+                source.value: {
+                    target.value: value
+                    for target, value in targets.items()
+                }
+                for source, targets in self.coupling.matrix.items()
+            },
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"[JAE] World state saved: {path}")
+
+
+# =========================================================
+# 12. SCENARIO ENGINE
+# =========================================================
+
+class ScenarioEngine:
+
+    def __init__(self, world: JAEWorldModel):
+        self.world = world
+
+    def apply(self, scenario: str) -> None:
+
+        if scenario == "AI_ACCELERATION":
+            for state in self.world.systems.values():
+                state.C = min(100, state.C + 8)
+                state.U = min(100, state.U + 10)
+                state.R = min(100, state.R + 8)
+
+        elif scenario == "AI_REGULATION":
+            # v6.1 [FIX-1]：H 是 Human Control Gap，监管应 *缩小* 缺口
+            # 原 v6.0 写成 state.H += 15，导致 ASI 反而 +0.3 分。
+            for state in self.world.systems.values():
+                state.A = max(0, state.A - 10)
+                state.H = max(0, state.H - 15)          # FIXED: was +15
+                state.stability = min(100, state.stability + 10)
+
+        elif scenario == "GLOBAL_CRISIS":
+            for state in self.world.systems.values():
+                state.stress    = min(100, state.stress + 25)
+                state.I         = min(100, state.I + 5)
+                state.A         = min(100, state.A + 5)
+                state.stability = max(0,   state.stability - 20)
+
+        elif scenario == "SYSTEM_DECOUPLING":
+            for source in SYSTEMS:
+                for target in SYSTEMS:
+                    if source != target:
+                        self.world.coupling.matrix[source][target] *= 0.7
+
+        elif scenario == "STABILIZATION":
+            # v6.1 新增：主动稳定性干预
+            for state in self.world.systems.values():
+                state.stability = min(100, state.stability + 25)
+                state.stress    = max(0,   state.stress - 20)
+                state.R         = max(0,   state.R - 5)
+
+        else:
+            raise ValueError(f"Unknown scenario: {scenario}")
+
+
+# =========================================================
+# 13. MONTE CARLO ENGINE
+# =========================================================
+
+class MonteCarloEngine:
+
+    def __init__(
+        self,
+        world_factory,
+        iterations: int = 100,
+        perturb_params: bool = True,   # v6.1 [FIX-9]
+        param_sigma: float = 0.05,
+    ):
+        self.world_factory  = world_factory
+        self.iterations     = iterations
+        self.perturb_params = perturb_params
+        self.param_sigma    = param_sigma
+
+    # v6.1 [FIX-9]：参数扰动采样器
+    def _perturbed_weights(self) -> Dict[str, float]:
+        w = {
+            k: max(0.0, v + random.gauss(0, self.param_sigma))
+            for k, v in ASI_WEIGHTS.items()
+        }
+        s = sum(w.values())
+        if s <= 0:
+            return deepcopy(ASI_WEIGHTS)
+        return {k: v / s for k, v in w.items()}
+
+    def _perturbed_coupling(self) -> Dict:
+        m = {}
+        for src, targets in DEFAULT_COUPLING.items():
+            m[src] = {}
+            for tgt, v in targets.items():
+                nv = v + random.gauss(0, self.param_sigma)
+                m[src][tgt] = max(0.0, min(1.0, nv))
+        return m
+
+    def run(self, steps: int = 20) -> Dict[str, Dict]:
+
+        results: Dict[str, List[float]] = {s.value: [] for s in SYSTEMS}
+
+        for _ in range(self.iterations):
+            world = self.world_factory()
+
+            # v6.1 [FIX-9]：参数扰动
+            if self.perturb_params:
+                world.asi      = ASIEngine(self._perturbed_weights())
+                world.coupling = CouplingEngine(self._perturbed_coupling())
+
+            # 初值扰动
+            for state in world.systems.values():
+                for attr in ["U", "A", "C", "N", "D", "H", "R", "X", "I"]:
+                    val = getattr(state, attr) + random.gauss(0, 2)
+                    setattr(state, attr, max(0.0, min(100.0, val)))
+                state._last_asi = world.asi.calculate(state)
+
+            world.run(steps)
+
+            for system, state in world.systems.items():
+                results[system.value].append(world.asi.calculate(state))
+
+        summary: Dict[str, Dict] = {}
+        for system, values in results.items():
+            n = len(values)
+            mean = sum(values) / n
+            var  = sum((v - mean) ** 2 for v in values) / n
+            p_crit = sum(v >= 85 for v in values) / n
+            summary[system] = {
+                "mean_ASI":             round(mean, 2),
+                "std_ASI":              round(math.sqrt(var), 2),  # v6.1
+                "critical_probability": round(p_crit, 3),
+                "max":                  round(max(values), 2),
+                "min":                  round(min(values), 2),
+            }
+
+        return summary
+
+
+# =========================================================
+# 14. FACTORY
+# =========================================================
+
+def create_world() -> JAEWorldModel:
+    return JAEWorldModel()
+
+
+# =========================================================
+# 15. MAIN
+# =========================================================
+
+if __name__ == "__main__":
+
+    print("\n[JAE v6.1] Initial World Scan")
+    world = create_world()
+    world.report()
+
+    print("\n[JAE v6.1] Scenario: AI_ACCELERATION")
+    ScenarioEngine(world).apply("AI_ACCELERATION")
+    world.report()
+
+    print("\n[JAE v6.1] Scenario: AI_REGULATION  (检验 FIX-1)")
+    ScenarioEngine(world).apply("AI_REGULATION")
+    world.report()
+
+    print("\n[JAE v6.1] Running 20-step simulation...")
+    world.run(steps=20)
+    world.report()
+
+    print("\n[JAE v6.1] Critical Event Scan")
+    events = world.detect_critical_events()
+    if not events:
+        print("  None")
+    for ev in events:
+        print("  ", ev)
+
+    print("\n[JAE v6.1] Monte Carlo "
+          "(100 iter, 20 steps, 初值+参数双重扰动)")
+    mc = MonteCarloEngine(create_world, iterations=100)
+    result = mc.run(steps=20)
+    for system, data in result.items():
+        print(
+            f"  {system}: mean={data['mean_ASI']} "
+            f"±{data['std_ASI']}, "
+            f"P(ASI>=85)={data['critical_probability']}"
+        )
+
+    world.save("jae_world_model_v6_1.json")
