@@ -1,0 +1,311 @@
+{
+  "schema": "JAE_W0_MVP",
+  "schema_version": "1.0.0",
+  "model": {
+    "name": "JAE",
+    "version": "10.x",
+    "layer": "World-State-MVP",
+    "state_type": "W0",
+    "status": "ACTIVE"
+  },
+
+  "data": {
+    "state_date": "2026-10-06",
+    "observation_date": "2026-10-06",
+    "generated_at": "2026-10-06T03:24:00+08:00",
+    "timezone": "Asia/Shanghai",
+    "data_window": "latest_available",
+    "freshness": "daily"
+  },
+
+  "world_state": {
+    "overall_risk_score": 0.63,
+    "overall_risk_level": "MEDIUM_HIGH",
+    "world_stability_index": 0.47,
+    "system_coupling_index": 0.81,
+    "regime": "HIGH_COUPLING_STRESS",
+    "systemic_instability": false
+  },
+
+  "systems": {
+
+    "ai_information": {
+      "score": 0.78,
+      "risk_level": "HIGH",
+      "variables": {
+        "ai_autonomy": 0.78,
+        "ai_capex": 0.86,
+        "ai_power_stress": 0.74
+      },
+      "confidence": 0.78,
+      "status": "EXPANSION_WITH_INFRASTRUCTURE_CONSTRAINT"
+    },
+
+    "financial": {
+      "score": 0.64,
+      "risk_level": "MEDIUM_HIGH",
+      "variables": {
+        "financial_stress": 0.64,
+        "liquidity_stress": 0.58,
+        "rate_stress": 0.72
+      },
+      "confidence": 0.76,
+      "status": "RESILIENT_BUT_RATE_SENSITIVE"
+    },
+
+    "energy": {
+      "score": 0.42,
+      "risk_level": "HIGH",
+      "variables": {
+        "energy_stress": 0.83,
+        "logistics_stress": 0.79
+      },
+      "confidence": 0.82,
+      "status": "LOGISTICS_AND_REFINING_CONSTRAINT"
+    },
+
+    "supply_chain": {
+      "score": 0.48,
+      "risk_level": "HIGH",
+      "variables": {
+        "supply_chain_stress": 0.71,
+        "logistics_stress": 0.79
+      },
+      "confidence": 0.78,
+      "status": "FRICTION_INCREASING"
+    },
+
+    "military_geopolitical": {
+      "score": 0.39,
+      "risk_level": "HIGH",
+      "variables": {
+        "geopolitical_risk": 0.84,
+        "military_risk": 0.78
+      },
+      "confidence": 0.80,
+      "status": "ELEVATED"
+    }
+  },
+
+  "key_variables": {
+
+    "AI_AUTONOMY": {
+      "value": 0.78,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.76
+    },
+
+    "AI_CAPEX": {
+      "value": 0.86,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.82
+    },
+
+    "AI_POWER_STRESS": {
+      "value": 0.74,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.78
+    },
+
+    "FINANCIAL_STRESS": {
+      "value": 0.64,
+      "unit": "index",
+      "risk_level": "MEDIUM_HIGH",
+      "direction": "STABLE_UP",
+      "confidence": 0.76
+    },
+
+    "LIQUIDITY_STRESS": {
+      "value": 0.58,
+      "unit": "index",
+      "risk_level": "MEDIUM",
+      "direction": "STABLE",
+      "confidence": 0.70
+    },
+
+    "RATE_STRESS": {
+      "value": 0.72,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.75
+    },
+
+    "ENERGY_STRESS": {
+      "value": 0.83,
+      "unit": "index",
+      "risk_level": "VERY_HIGH",
+      "direction": "UP",
+      "confidence": 0.84
+    },
+
+    "LOGISTICS_STRESS": {
+      "value": 0.79,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.83
+    },
+
+    "SUPPLYCHAIN_STRESS": {
+      "value": 0.71,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.78
+    },
+
+    "GEOPOLITICAL_RISK": {
+      "value": 0.84,
+      "unit": "index",
+      "risk_level": "VERY_HIGH",
+      "direction": "UP",
+      "confidence": 0.82
+    },
+
+    "MILITARY_RISK": {
+      "value": 0.78,
+      "unit": "index",
+      "risk_level": "HIGH",
+      "direction": "UP",
+      "confidence": 0.80
+    },
+
+    "SYSTEM_COUPLING": {
+      "value": 0.81,
+      "unit": "index",
+      "risk_level": "VERY_HIGH",
+      "direction": "UP",
+      "confidence": 0.80
+    },
+
+    "WORLD_STABILITY": {
+      "value": 0.47,
+      "unit": "index",
+      "risk_level": "MEDIUM_HIGH",
+      "direction": "DOWN",
+      "confidence": 0.75
+    }
+  },
+
+  "critical_risk": {
+    "rank": 1,
+    "variable": "ENERGY_AI_GEOPOLITICAL_COUPLING",
+    "score": 0.87,
+    "risk_level": "VERY_HIGH",
+
+    "chain": [
+      "GEOPOLITICAL_CONFLICT",
+      "ENERGY_TRANSPORT_DISRUPTION",
+      "LOGISTICS_COST_INCREASE",
+      "INFLATION_PRESSURE",
+      "RATE_PRESSURE",
+      "FINANCIAL_VALUATION_STRESS"
+    ],
+
+    "parallel_chain": [
+      "AI_CAPEX_EXPANSION",
+      "DATA_CENTER_POWER_DEMAND",
+      "GRID_CONSTRAINT",
+      "INFRASTRUCTURE_CAPEX",
+      "SEMICONDUCTOR_SUPPLY_CHAIN_STRESS"
+    ],
+
+    "convergence": [
+      "ENERGY",
+      "AI",
+      "FINANCE",
+      "SUPPLY_CHAIN",
+      "GEOPOLITICS"
+    ]
+  },
+
+  "coupling": {
+    "AI_ENERGY": 0.86,
+    "ENERGY_SUPPLY_CHAIN": 0.88,
+    "ENERGY_FINANCE": 0.71,
+    "GEOPOLITICS_ENERGY": 0.91,
+    "AI_FINANCE": 0.74,
+    "AI_SUPPLY_CHAIN": 0.79,
+    "GEOPOLITICS_SUPPLY_CHAIN": 0.83,
+    "FINANCE_SUPPLY_CHAIN": 0.68
+  },
+
+  "risk_regime": {
+    "current": "HIGH_COUPLING",
+    "previous": "ELEVATED",
+    "transition_probability": 0.68,
+    "systemic_crisis_probability": 0.22,
+    "near_term_horizon_days": 30
+  },
+
+  "watchlist": [
+    {
+      "rank": 1,
+      "variable": "ENERGY_LOGISTICS",
+      "threshold": 0.85,
+      "current": 0.79,
+      "action": "WATCH"
+    },
+    {
+      "rank": 2,
+      "variable": "GEOPOLITICAL_RISK",
+      "threshold": 0.90,
+      "current": 0.84,
+      "action": "WATCH"
+    },
+    {
+      "rank": 3,
+      "variable": "AI_POWER_STRESS",
+      "threshold": 0.80,
+      "current": 0.74,
+      "action": "WATCH"
+    },
+    {
+      "rank": 4,
+      "variable": "SYSTEM_COUPLING",
+      "threshold": 0.85,
+      "current": 0.81,
+      "action": "WATCH"
+    }
+  ],
+
+  "data_quality": {
+    "overall_confidence": 0.78,
+    "source_count": 8,
+    "freshness_score": 0.91,
+    "conflict_detected": false,
+    "missing_data_ratio": 0.08,
+    "estimated_values": true
+  },
+
+  "source_context": {
+    "primary_domains": [
+      "Reuters",
+      "IEA",
+      "McKinsey",
+      "Deloitte",
+      "EY",
+      "S&P Global"
+    ],
+    "latest_signal": {
+      "date": "2026-10-05",
+      "description": "AI power constraints and Middle East energy logistics remain major cross-system stress signals"
+    }
+  },
+
+  "mvp_decision": {
+    "world_state": "STABLE_BUT_HIGHLY_COUPLED",
+    "primary_risk": "ENERGY_AI_GEOPOLITICAL_COUPLING",
+    "secondary_risk": "SUPPLY_CHAIN_LOGISTICS",
+    "primary_opportunity": "AI_INFRASTRUCTURE_AND_POWER_INVESTMENT",
+    "recommended_mode": "DEFENSIVE_MONITORING",
+    "trigger_next_layer": true
+  }
+}
